@@ -1,0 +1,218 @@
+# JARVIS Bridge — API contract for the native app
+
+Status: **verified live on 2026-09-02** against `bridge/jarvis_bridge.py`.
+Owner of this document: Claude Code (backend). Consumer: Codex (`apple/`).
+
+This is the authoritative contract for the Swift client. Backend will not change
+endpoints, payloads, auth, error semantics, or the port without updating this
+file first.
+
+## 1. Transport
+
+| Item | Value |
+|---|---|
+| Port | **8770** (changed from 8766 — see §7) |
+| Local base URL | `http://127.0.0.1:8770` |
+| Tailnet base URL | `http://macbook-air-von-marlon.tailfb3c35.ts.net:8770` |
+| Bind default | `127.0.0.1` (`JARVIS_BRIDGE_HOST`) |
+| Scheme | plain HTTP; confidentiality comes from Tailscale, not TLS |
+| Server | `ThreadingHTTPServer`, one thread per request |
+
+The bridge is never exposed to the public internet. Reachability off-device is
+provided by `tailscale serve --bg --http=8770 http://127.0.0.1:8770`.
+
+## 2. Authentication
+
+Every endpoint except `GET /` requires the app token:
+
+```
+Authorization: Bearer <JARVIS_APP_TOKEN>
+```
+
+`X-Jarvis-Token: <token>` is accepted as an equivalent fallback. Comparison is
+constant-time. The token lives in `~/.hermes/.env` on the Mac and is generated
+by `scripts/setup-mac.sh`; it is never printed and never committed.
+
+The Hermes API key (`API_SERVER_KEY`) stays on the Mac. **The phone never holds
+it** — the bridge holds it and speaks to Hermes on the app's behalf.
+
+Missing or wrong token → `401 {"error": "Nicht autorisiert"}`.
+
+## 3. Endpoints
+
+### `GET /` — service banner (open, no auth)
+```json
+{"service": "JARVIS Bridge", "auth": "required"}
+```
+Use this for a reachability probe that must not require a token.
+
+### `GET /health` — auth
+`200` when Hermes is reachable, `503` when it is not.
+```json
+{"ok": true, "hermes": {"status": "ok", "platform": "hermes-agent", "version": "0.20.6"}}
+```
+
+### `POST /chat` — auth
+Request:
+```json
+{"message": "…", "conversation": "jarvis-apple"}
+```
+- `message`: required, 1–20 000 chars.
+- `conversation`: optional, defaults to `jarvis-apple`, max 80 chars. Acts as
+  the session key; the bridge maps it to a Hermes session and serializes
+  concurrent turns per conversation with a lock.
+
+Response `200`:
+```json
+{"text": "BRIDGE OK", "tools": [], "run_id": "run_3ab153cf…", "duration_ms": 32265}
+```
+- `tools`: `[{"name": "…", "preview": "…≤200 chars"}]`, tool names starting with
+  `_` are filtered out.
+- `run_id`: pass to `POST /stop` to cancel.
+
+If the stored Hermes session has expired the bridge transparently retries once
+with a fresh session, so the client does not need to handle session rotation.
+
+### `POST /stop` — auth
+```json
+{"run_id": "run_…"}
+```
+Returns Hermes's stop payload, or `{"status": "stopped"}` if the response is not
+JSON.
+
+### `POST /wake` — auth
+No body required. With no relay configured returns `{"awake": true, "relay": false}`.
+With `JARVIS_RELAY_URL` set it proxies to the relay's `/wake` and returns the
+relay payload plus `{"awake": true, "relay": true}`.
+
+### `GET /files?path=<abs path>` — auth
+```json
+{"path": "/Users/marlon/Documents", "parent": "/Users/marlon",
+ "items": [{"name": "…", "path": "…", "is_directory": false,
+            "size": 1234, "modified": 1756800000.0}]}
+```
+Directories sort first, then case-insensitive by name. Dotfiles are omitted.
+Capped at **1000 items** — the client must not assume the listing is complete.
+`modified` is a Unix epoch **Double**, not an ISO string.
+
+### `GET /files/download?path=<abs path>` — auth
+`application/octet-stream` with `Content-Length` and
+`Content-Disposition: attachment; filename="…"`.
+
+## 4. Error semantics
+
+| Status | Meaning | Body |
+|---|---|---|
+| 400 | Validation failure (missing/oversized message, bad `run_id`, bad body size) | `{"error": "<German text>"}` |
+| 401 | Missing/invalid token | `{"error": "Nicht autorisiert"}` |
+| 403 | Path outside the allowed roots, or a blocked segment | `{"error": "…"}` |
+| 404 | Unknown route, or file not found | `{"error": "Nicht gefunden"}` |
+| 502 | Hermes unreachable or failed | `{"error": "…"}` |
+| 503 | `/health` only — Hermes not reachable | `{"ok": false, …}` |
+
+**Error strings are German and are user-facing.** They are sanitized
+(`_safe_error`) so they do not leak internal URLs or the key. The client may show
+them directly, but should not parse them — branch on the status code.
+
+## 5. Limits and timeouts
+
+| Limit | Value |
+|---|---|
+| Request body | 64 KiB |
+| `message` | 20 000 chars |
+| `conversation` | 80 chars |
+| Directory listing | 1000 entries |
+
+Server-side upstream timeouts: `/health` 5 s, `/chat` 300 s, `/wake` 90 s, other
+Hermes calls 20 s.
+
+> **Client timeout:** two verified real chat turns took **32.3 s** and
+> **39.3 s**. The Swift client currently sets `timeout: 90` on `chat(...)` in
+> `JarvisAPIClient` — that is only ~2.3x headroom over the slower measurement,
+> and the two samples already vary by 22%. Recommend raising to **120 s**; a slower model or a tool-using turn can plausibly exceed
+> 90 s. Current values elsewhere are fine: health 6 s, files 20 s, download
+> 120 s, wake 100 s. The first request after bridge start is slower (cold
+> start) — do not treat a single early timeout as the bridge being down.
+
+## 6. File access sandbox
+
+Paths are `expanduser().resolve()`d, then required to be equal to or beneath one
+of `JARVIS_FILE_ROOTS` (`os.pathsep`-separated; defaults to the home directory,
+set to `~/Documents` by `setup-mac.sh`). Any path whose relative parts contain
+`.ssh`, `.gnupg`, `.hermes`, or `Keychains` is rejected with 403. Symlink
+escapes are covered because resolution happens before the check.
+
+## 7. Port change — action required in `apple/`
+
+The bridge previously defaulted to **8766**. That collided with the voice
+server, which binds every entry of `server.yaml`'s `tls_ports: [443, 8766]`
+(`server/server.py:1599`), and `server/scripts/jarvis-stop.sh` also kills 8766 —
+so stopping the voice server would kill the bridge. The bridge has moved to
+**8770**. Voice server ports (8765, 443, 8766, 9443) are unchanged.
+
+Backend files already updated: `bridge/`, `relay/`, `launchd/com.jarvis.bridge.plist`,
+`scripts/setup-mac.sh`, `docs/PHASE1_TAILSCALE.md`, `docs/PHASE2_BEWERTUNG.md`,
+`docs/CODEX_FIX_IOS_BUILD.md`.
+
+Codex must update `apple/`. Referenced by **symbol, not line number** — these
+files were being edited while this document was written, so line numbers drift:
+
+1. `AppModel.defaultServerURL` (in `apple/Sources/Stores/AppModel.swift`) —
+   change the port from `8766` to `8770`.
+2. The stale-URL migration predicate in the same file (the branch testing
+   `contains("jarvis.local")` / `hasSuffix(":8765")` / the bare
+   `http://macbook-air-von-marlon:8766` equality) must also match a saved
+   `:8766` on the tailnet host. Existing installs may already hold the
+   colliding 8766 value, so without this they silently keep pointing at the
+   voice server's TLS port.
+3. `SettingsView` uses `AppModel.defaultServerURL` as its `TextField`
+   placeholder, so it follows item 1 automatically — no separate edit needed.
+4. Consider raising the `chat(...)` timeout from 90 s to 120 s (see §5).
+
+## 8. Port map (authoritative)
+
+| Port | Service | Bind |
+|---|---|---|
+| 8642 | Hermes Agent API | 127.0.0.1 |
+| 8765 | Voice server, plain `ws://` | 0.0.0.0 |
+| 443, 8766 | Voice server TLS (`tls_ports`) | 0.0.0.0 |
+| 8767 | Remote worker stats | remote host |
+| 8768 | Remote worker STT | remote host |
+| **8770** | **JARVIS Bridge** | **127.0.0.1** |
+| 9119 | Hermes dashboard | 127.0.0.1 |
+| 9443 | Dashboard TLS reverse proxy | 0.0.0.0 |
+
+Startup order: Hermes (8642) → bridge (8770) → voice server → dashboard proxy.
+The bridge degrades gracefully to `503` on `/health` and `502` on `/chat` while
+Hermes is down, so ordering is a preference, not a hard requirement.
+
+## 9. Verification performed
+
+```
+110 passed   full Python suite  (pytest -q, offline, deterministic)
+ 15 passed   bridge/test_bridge.py + relay/test_relay.py
+     OK      plutil -lint on all three launchd plists
+     200     GET  /health  with token  → hermes 0.20.6, 0.23 s
+     401     GET  /health  without token
+     200     GET  /files?path=~/Documents
+     200     POST /chat → {"text":"BRIDGE OK","run_id":"run_3ab153cf…"}, 32.3 s
+```
+
+Bridge on 8770 was verified listening simultaneously with a process on 8766,
+confirming the collision is resolved.
+
+### Post-deploy verification (deployed launchd service, 2026-09-02)
+
+`scripts/setup-mac.sh` was run. Existing `.env` tokens were preserved (no
+regeneration). Deployed `~/.hermes/services/jarvis_bridge.py` and the installed
+LaunchAgent are byte-identical to the repo copies.
+
+```
+   running   launchd gui/501/com.jarvis.bridge, pid 4873, never exited
+      8770   bridge LISTEN
+      8642   hermes LISTEN (gateway restarted cleanly)
+      8766   connection refused — old bridge port released to the voice server
+       401   GET  /health  without token
+       200   GET  /health  with token → hermes 0.20.6, 0.22 s
+       200   POST /chat → {"text":"DEPLOY OK","run_id":"run_9e8210c8…"}, 39.3 s
+```

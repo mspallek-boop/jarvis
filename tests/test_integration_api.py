@@ -40,9 +40,18 @@ def test_chat_rejects_empty_input(no_token, client):
     assert r.json()["error"] == "empty input"
 
 
-def test_chat_backend_unreachable_is_graceful_502(no_token, client):
-    # Hermes is not running in tests -> endpoint must fail closed with 502,
-    # never a 500 stack trace or a hang.
+def test_chat_backend_unreachable_is_graceful_502(no_token, client, monkeypatch):
+    # An unreachable Hermes must fail closed with 502, never a 500 stack trace
+    # or a hang. The backend is stubbed so the test is deterministic and makes
+    # no network call, whether or not a real Hermes is running on this machine.
+    import requests
+
+    def _unreachable(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("stubbed: backend unreachable")
+
+    monkeypatch.setattr(no_token.HERMES, "get_session_id", _unreachable)
+    monkeypatch.setattr(no_token.HERMES, "chat_stream_events", _unreachable)
+
     r = client.post("/api/chat", json={"input": "hello"})
     assert r.status_code == 502
     assert "error" in r.json()

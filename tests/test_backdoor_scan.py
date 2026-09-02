@@ -89,6 +89,7 @@ HOST_ALLOW = {
     "127.0.0.1", "0.0.0.0", "localhost",
     "jarvis.local", "jarvis", "this-machine",
     "api.elevenlabs.io",
+    "api.open-meteo.com",     # HUD weather panel; keyless public forecast API
     "www.youtube.com", "youtu.be", "youtube.com",
     "fonts.googleapis.com", "fonts.gstatic.com",
     "www.w3.org",              # SVG/XML namespace URIs, not fetched

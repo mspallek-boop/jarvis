@@ -7,6 +7,7 @@ server/logs/
 server/hud/audio/
 server/hud/jarvis.cer
 server/hud/weather-config.json
+bridge/logs/
 
 # worker local files
 worker/run-stt.bat
@@ -22,3 +23,12 @@ venv/
 .DS_Store
 Thumbs.db
 nohup.out
+
+# Apple/Xcode local state
+apple/JARVIS.xcodeproj/project.xcworkspace/xcuserdata/
+apple/JARVIS.xcodeproj/xcuserdata/
+apple/DerivedData*/
+*.xcuserstate
+
+# Consolidated local JARVIS data (builds, runtime state, credentials)
+LocalData/
