@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>JARVIS</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<!-- The bridge is reached over Tailscale at
+		     <host>.<tailnet>.ts.net:8770 over plain HTTP. Confidentiality comes
+		     from the WireGuard tunnel, not from TLS, and the tailnet is not
+		     reachable from the public internet. NSAllowsLocalNetworking does
+		     not cover ts.net (it is neither .local nor link-local), so without
+		     this exception every request fails with "App Transport Security
+		     policy requires the use of a secure connection".
+		     Scoped to ts.net deliberately — NSAllowsArbitraryLoads would drop
+		     ATS for every host the app ever talks to. -->
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>ts.net</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JARVIS nutzt das Mikrofon nur während du sprichst.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>JARVIS wandelt deine Sprache über Apples Spracherkennung in Text um.</string>
+</dict>
+</plist>
