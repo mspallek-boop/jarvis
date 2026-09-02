@@ -25,9 +25,13 @@ import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import uuid
+import wave
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -444,10 +448,55 @@ class VoicePipelineServer:
 
     # ------------------------------------------------------------------ TTS
 
+    def _macos_tts_chunks(self, text: str, timing: TurnTiming) -> Iterator[bytes]:
+        """Local TTS via the macOS `say` command.
+
+        Used when no ElevenLabs key is configured and voice.fallback is "macos".
+        Yields raw little-endian int16 PCM at 16 kHz mono — byte-for-byte the
+        same framing ElevenLabs returns for output_format pcm_16000, so nothing
+        downstream (barge-in, chunking, the HUD player) needs to change.
+        """
+        voice = self.cfg["voice"]
+        timing.tts_model = "macos-say"
+        timing.voice_id = voice.get("macos_voice") or "system"
+        timing.tts_request_start_monotonic = timing.tts_request_start_monotonic or time.perf_counter()
+        record_usage(tts_chars=len(text))
+
+        with tempfile.TemporaryDirectory(prefix="jarvis-tts-") as tmp:
+            wav_path = os.path.join(tmp, "out.wav")
+            cmd = ["say", "-o", wav_path, "--data-format=LEI16@16000", "--channels=1"]
+            if voice.get("macos_voice"):
+                cmd += ["-v", str(voice["macos_voice"])]
+            cmd += ["--", text]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError(f"macOS say failed: {exc.stderr.decode('utf-8', 'replace')[:300]}") from exc
+            except FileNotFoundError as exc:
+                raise RuntimeError("macOS say not available") from exc
+            with wave.open(wav_path, "rb") as w:
+                if w.getframerate() != 16000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
+                    raise RuntimeError(
+                        f"say produced {w.getframerate()}Hz/{w.getnchannels()}ch/"
+                        f"{w.getsampwidth()*8}bit, expected 16000/1/16"
+                    )
+                while True:
+                    chunk = w.readframes(2048)  # 2048 frames = 4096 bytes, matches the EL chunk size
+                    if not chunk:
+                        break
+                    if timing.first_tts_audio_byte_monotonic is None:
+                        timing.first_tts_audio_byte_monotonic = time.perf_counter()
+                    yield chunk
+
     def tts_chunks_sync(self, text: str, timing: TurnTiming) -> Iterator[bytes]:
         voice = self.cfg["voice"]
         key = os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("ELEVEN_API_KEY") or os.environ.get("XI_API_KEY")
         if not key:
+            # No cloud key: fall back to local speech when configured, so the
+            # pipeline still speaks instead of failing the whole turn.
+            if str(voice.get("fallback", "")).lower() == "macos" and shutil.which("say"):
+                yield from self._macos_tts_chunks(text, timing)
+                return
             raise RuntimeError("ElevenLabs API key not found")
         timing.tts_model = voice["model"]
         timing.voice_id = voice["voice_id"]

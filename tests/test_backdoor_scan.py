@@ -20,11 +20,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PROD_DIRS = ["server", "client", "worker", "hermes-plugin"]
 
 
+# Virtualenv directory names to skip. SETUP.md tells you to create ".venv",
+# which the old bare "venv" check did not match — every third-party package
+# then landed in the scan and tripped the dangerous-sink assertions.
+_VENV_PARTS = {"venv", ".venv", "site-packages", "node_modules", "__pycache__"}
+
+
+def _is_vendored(path) -> bool:
+    return any(part in _VENV_PARTS for part in path.parts)
+
+
 def _prod_files(*suffixes):
     out = []
     for d in PROD_DIRS:
         for p in (REPO_ROOT / d).rglob("*"):
-            if p.is_file() and p.suffix in suffixes and "venv" not in p.parts:
+            if p.is_file() and p.suffix in suffixes and not _is_vendored(p):
                 out.append(p)
     return out
 

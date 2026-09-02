@@ -33,7 +33,7 @@ its personality. A ready-made J.A.R.V.I.S. persona ships in
 cat hermes-plugin/SOUL.jarvis.md >> ~/.hermes/SOUL.md
 ```
 
-## 2. ElevenLabs (the voice)
+## 2. ElevenLabs (the voice) — optional
 
 Create an API key at elevenlabs.io and pick a voice from their library, noting
 its `voice_id`. Add to `~/.hermes/.env`:
@@ -42,7 +42,18 @@ its `voice_id`. Add to `~/.hermes/.env`:
 ELEVENLABS_API_KEY=...
 ```
 
+Then set the real `voice_id` under `voice:` in `config/server.yaml` — the
+shipped value is the placeholder `YOUR_ELEVENLABS_VOICE_ID` and will fail.
+
 For the HUD's quota bar, give the key the **User → Read** permission.
+
+**Without an ElevenLabs key**, `voice.fallback: macos` (the default) makes the
+server speak through the built-in macOS `say` command instead: offline, free,
+no account. It yields the same 16 kHz mono PCM framing, so the HUD, barge-in
+and the phone client behave identically — only the voice differs. Set
+`voice.macos_voice` to any installed system voice (e.g. `Daniel`) or leave it
+empty for the system default. Set `fallback: ""` to restore the old behaviour
+of failing the turn when no key is present.
 
 ## 3. The voice pipeline server (this repo)
 
@@ -56,6 +67,16 @@ python3 -m venv .venv
     RealtimeSTT faster-whisper silero-vad websockets psutil
 cp config/server.example.yaml config/server.yaml
 ```
+
+On macOS, `RealtimeSTT` pulls in PyAudio, which needs the portaudio C library
+present *before* pip runs or the wheel build fails:
+
+```bash
+brew install portaudio
+```
+
+Use Python 3.11 or newer for this venv — 3.9 is too old for current torch
+wheels.
 
 Note: `faster-whisper` and `silero-vad` are REQUIRED — recent RealtimeSTT
 releases treat them as optional extras and fail at runtime without them
