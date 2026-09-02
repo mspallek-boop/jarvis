@@ -45,6 +45,18 @@ class RelayConfig:
         self.broadcast = os.environ.get("JARVIS_MAC_BROADCAST", "255.255.255.255").strip()
         self.wake_port = int(os.environ.get("JARVIS_WAKE_PORT", "9"))
         self.wake_timeout = int(os.environ.get("JARVIS_WAKE_TIMEOUT", "90"))
+        # Wake-on-LAN only works from inside the Mac's own broadcast domain.
+        # A relay in the cloud (Hetzner, Fly, any VPS) cannot reach it: the
+        # magic packet is a UDP broadcast and is never routed off-segment.
+        # Enabled by default only when a MAC address is configured, and can be
+        # forced off with JARVIS_WAKE_ENABLED=0 for a cloud deployment.
+        flag = os.environ.get("JARVIS_WAKE_ENABLED", "").strip().lower()
+        if flag in {"0", "false", "no", "off"}:
+            self.wake_enabled = False
+        elif flag in {"1", "true", "yes", "on"}:
+            self.wake_enabled = True
+        else:
+            self.wake_enabled = bool(self.mac_address)
         if len(self.token) < 24:
             raise SystemExit("JARVIS_APP_TOKEN must contain at least 24 characters")
 
@@ -100,8 +112,16 @@ class RelayHandler(BaseHTTPRequestHandler):
                 time.sleep(0.15)
 
     def _ensure_awake(self) -> bool:
+        """True when the Mac is reachable, waking it first if that can work.
+
+        With waking disabled this returns immediately rather than blocking for
+        wake_timeout (90 s by default) on a request that could never succeed —
+        a slow failure is worse than a fast one for the caller.
+        """
         if self._mac_online():
             return True
+        if not self.config.wake_enabled:
+            return False
         self._wake()
         deadline = time.monotonic() + self.config.wake_timeout
         while time.monotonic() < deadline:
@@ -132,11 +152,19 @@ class RelayHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             online = self._mac_online()
-            self._json(HTTPStatus.OK, {"ok": True, "relay": "online", "mac": "online" if online else "sleeping_or_off"})
+            self._json(HTTPStatus.OK, {
+                "ok": True,
+                "relay": "online",
+                "mac": "online" if online else "sleeping_or_off",
+                "wake_enabled": self.config.wake_enabled,
+            })
             return
         if parsed.path.startswith("/files"):
             if not self._ensure_awake():
-                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Mac konnte nicht aufgeweckt werden"})
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                    "error": "Mac ist nicht erreichbar" if not self.config.wake_enabled
+                    else "Mac konnte nicht aufgeweckt werden"
+                })
                 return
             suffix = self.path
             self._proxy("GET", suffix)
@@ -156,6 +184,14 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length) if length else b"{}"
         if self.path == "/wake":
+            if not self.config.wake_enabled:
+                self._json(HTTPStatus.NOT_IMPLEMENTED, {
+                    "error": "Wake-on-LAN ist auf diesem Relay deaktiviert. Ein Magic Packet "
+                             "ist ein UDP-Broadcast und erreicht den Mac nur aus demselben "
+                             "Netzsegment.",
+                    "wake_enabled": False,
+                })
+                return
             try:
                 self._wake()
                 self._json(HTTPStatus.OK, {"ok": True, "message": "Wake-Signal wurde gesendet"})
@@ -165,9 +201,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         if self.path in {"/chat", "/stop"}:
             try:
                 if not self._ensure_awake():
-                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
-                        "error": "Mac konnte nicht aufgeweckt werden. Er muss im Ruhezustand und mit Strom/WLAN verbunden sein."
-                    })
+                    msg = (
+                        "Mac ist nicht erreichbar und dieses Relay kann ihn nicht wecken."
+                        if not self.config.wake_enabled else
+                        "Mac konnte nicht aufgeweckt werden. Er muss im Ruhezustand und mit Strom/WLAN verbunden sein."
+                    )
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": msg})
                     return
             except ValueError as exc:
                 self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
