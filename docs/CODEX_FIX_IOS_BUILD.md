@@ -1,6 +1,6 @@
 # Fix für Codex: iOS-Build ist gebrochen
 
-Stand 2026-09-01. Das iOS-Target baut nicht mehr. macOS baut weiterhin fehlerfrei.
+Stand 2026-09-02. Das iOS-Target baut nicht mehr. macOS baut weiterhin fehlerfrei.
 Die Ursache liegt vollständig in `apple/JARVIS.xcodeproj/project.pbxproj`, also im
 Zuständigkeitsbereich von Codex. Backend und Bridge sind nicht betroffen.
 
@@ -80,29 +80,26 @@ Erwartet: zweimal `** BUILD SUCCEEDED **`.
 
 ## Zweite Aufgabe im selben Zug: Bridge-Adresse
 
-Die Bridge ist umgezogen. Die App zeigt noch auf die alte Adresse und erreicht
-den Mac deshalb nicht.
+**Erledigt (Stand 2026-09-02). Nicht zurückändern.**
 
-| Datei | Zeile | aktuell | soll |
-|---|---|---|---|
-| `apple/Sources/Stores/AppModel.swift` | 43 | `http://jarvis.local:8765` | Tailscale-URL, siehe unten |
-| `apple/Sources/Views/SettingsView.swift` | 11 | `http://jarvis.local:8765` (Platzhalter) | dieselbe |
+Die Bridge läuft auf Port **8770**. Der Voice-Server behält `8765` (plain `ws://`)
+und `tls_ports: [443, 8766]`. `8766` ist Voice-TLS, nicht die Bridge.
 
-Neuer Standardwert:
+Committed `AppModel.defaultServerURL` ist bereits:
 
 ```
 http://macbook-air-von-marlon.tailfb3c35.ts.net:8770
 ```
 
-**Wichtig — Migration:** In `AppModel.swift` wird der Wert aus `UserDefaults`
-gelesen und nur als Fallback gesetzt. Bei bestehenden Installationen steht dort
-noch der alte Wert, der neue Default greift also nicht. Es braucht eine einmalige
-Migration: Wenn der gespeicherte `serverURL` auf Port `8765` **oder `8766`**
-endet oder `jarvis.local` enthält, auf den neuen Wert überschreiben.
+`SettingsView` nutzt `AppModel.defaultServerURL` als TextField-Platzhalter — dort
+steht kein eigener URL-String.
 
-`8766` muss mitmigriert werden: die Bridge lief zwischenzeitlich auf diesem Port
-und kollidierte dort mit `tls_ports: [443, 8766]` des Voice-Servers. Bestehende
-Installationen haben den kollidierenden Wert eventuell schon gespeichert.
+Die UserDefaults-Migration in `AppModel` ist ebenfalls schon da: ein gespeicherter
+`serverURL` mit `jarvis.local`, Suffix `:8765` oder `:8766` wird auf den Default
+überschrieben. Nicht entfernen, und **nicht** auf `jarvis.local:8765` oder `:8766`
+zurücksetzen.
+
+Offen bleibt nur der Watch-`PRODUCT_NAME`-Fix oben.
 
 ## Bridge-Vertrag (Stand jetzt, getestet)
 
