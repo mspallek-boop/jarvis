@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 import SwiftUI
 
 enum AppTheme: String, CaseIterable, Identifiable {
@@ -161,8 +162,9 @@ enum AppFontFamily: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppModel: ObservableObject {
-    static let defaultServerURL = "http://macbook-air-von-marlon.tailfb3c35.ts.net:8770"
+    static let defaultServerURL = "https://macbook-air-von-marlon.tailfb3c35.ts.net:8443"
     private static let maximumMessageCount = 250
+    private static let maximumConversationCount = 30
 
     enum ConnectionState: Equatable {
         case unchecked
@@ -185,8 +187,11 @@ final class AppModel: ObservableObject {
     @Published var messages: [ChatMessage] = [
         ChatMessage(role: .jarvis, text: "System bereit. Womit darf ich helfen?")
     ]
+    @Published private(set) var conversations: [ChatConversation] = []
     @Published var input = ""
     @Published var isWorking = false
+    @Published private(set) var activityLabel = "Ich denke nach"
+    @Published private(set) var liveResponse = ""
     @Published var connection: ConnectionState = .unchecked
     @Published var showingSettings = false
     @Published var serverURL: String
@@ -203,6 +208,107 @@ final class AppModel: ObservableObject {
     @Published var fileParent: String?
     @Published var isLoadingFiles = false
     @Published var downloadedFile: URL?
+    @Published private(set) var voiceModeEnabled = true
+    private var voiceForeground = false
+    /// Voices the Mac's speech provider offers. Fetched through the bridge so
+    /// the provider API key never reaches the app.
+    @Published private(set) var availableBridgeVoices: [JarvisAPIClient.BridgeVoice] = []
+    @Published private(set) var voiceListError: String?
+    @Published var selectedBridgeVoice: String = UserDefaults.standard.string(forKey: "selectedBridgeVoice") ?? "" {
+        didSet { UserDefaults.standard.set(selectedBridgeVoice, forKey: "selectedBridgeVoice") }
+    }
+
+    /// A pasted picture, waiting to go out with the next message.
+    @Published private(set) var pendingImagePath = ""
+    @Published private(set) var pendingImageData: Data?
+    @Published private(set) var isUploadingImage = false
+
+    /// Accepts a picture from the clipboard and parks it on the Mac.
+    func attachImage(_ data: Data) async {
+        guard !data.isEmpty, !isUploadingImage else { return }
+        isUploadingImage = true
+        defer { isUploadingImage = false }
+        do {
+            let stored = try await makeClient().upload(imageData: data)
+            pendingImagePath = stored.path
+            pendingImageData = data
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Nothing to send without either words or a picture.
+    var cannotSend: Bool {
+        (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingImagePath.isEmpty)
+            || isWorking || isUploadingImage
+    }
+
+    /// Pulls the first usable picture out of a paste and uploads it.
+    func attachPastedImage(from providers: [NSItemProvider]) async {
+        for provider in providers {
+            for type in [UTType.png, .jpeg, .heic, .gif, .tiff, .image]
+            where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+                guard let raw = await Self.loadData(from: provider, type: type) else { continue }
+                // Normalise first: a macOS screenshot lands on the clipboard as
+                // TIFF, which the bridge would refuse.
+                guard let png = PlatformImage.pngData(from: raw) ?? Optional(raw) else { continue }
+                await attachImage(png)
+                return
+            }
+        }
+        lastError = "In der Zwischenablage war kein Bild."
+    }
+
+    /// NSItemProvider's callback API, bridged once instead of at each call.
+    private static func loadData(from provider: NSItemProvider, type: UTType) async -> Data? {
+        await withCheckedContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
+    }
+
+    #if os(iOS)
+    func attachClipboardImage() async {
+        guard let png = PlatformImage.clipboardPNG() else {
+            lastError = "In der Zwischenablage war kein Bild."
+            return
+        }
+        await attachImage(png)
+    }
+    #endif
+
+    func discardPendingImage() {
+        pendingImagePath = ""
+        pendingImageData = nil
+    }
+
+    /// One place that knows the chosen voice, so every request carries it.
+    func makeClient() throws -> JarvisAPIClient {
+        try JarvisAPIClient(urlString: serverURL, token: token, voiceID: selectedBridgeVoice)
+    }
+
+    func loadVoices() async {
+        guard !token.isEmpty else { return }
+        do {
+            let response = try await makeClient().voices()
+            availableBridgeVoices = response.voices
+            voiceListError = response.voices.isEmpty
+                ? "Der Mac nutzt gerade keine Anbieter-Stimme."
+                : nil
+            // A voice removed on the Mac must not stay selected here.
+            if !selectedBridgeVoice.isEmpty,
+               !response.voices.contains(where: { $0.id == selectedBridgeVoice }) {
+                selectedBridgeVoice = ""
+            }
+        } catch {
+            availableBridgeVoices = []
+            voiceListError = error.localizedDescription
+        }
+    }
+    private var activeRunID: String?
+    private var chatTask: Task<JarvisAPIClient.ChatResponse, Error>?
     let speech = SpeechController()
     private var speechObserver: AnyCancellable?
 #if os(iOS)
@@ -219,7 +325,9 @@ final class AppModel: ObservableObject {
         }
         token = KeychainStore.loadToken()
         speaksReplies = UserDefaults.standard.object(forKey: "speaksReplies") as? Bool ?? true
-        conversation = UserDefaults.standard.string(forKey: "conversation") ?? "jarvis-apple"
+        // Every full app launch starts in a fresh conversation. The archived
+        // conversations are restored below and remain selectable in history.
+        conversation = Self.makeConversationID()
         theme = AppTheme(rawValue: UserDefaults.standard.string(forKey: "appearanceTheme") ?? "") ?? .system
         let storedBackground = UserDefaults.standard.string(forKey: "appearanceBackground")
             ?? UserDefaults.standard.string(forKey: "appearanceAccent")
@@ -227,14 +335,30 @@ final class AppModel: ObservableObject {
         fontFamily = AppFontFamily(rawValue: UserDefaults.standard.string(forKey: "appearanceFont") ?? "") ?? .system
         let savedScale = UserDefaults.standard.object(forKey: "appearanceFontScale") as? Double ?? 1
         fontScale = min(max(savedScale, 0.8), 1.4)
+        restoreChatHistory()
+        speech.onUtterance = { [weak self] text in
+            guard let self, self.voiceModeEnabled, self.voiceForeground else { return }
+            Task {
+                // Barge-in delivers speech while the previous turn still runs.
+                // send() ignores input while isWorking, so end that turn first.
+                if self.isWorking { await self.cancelActiveRun(announcing: false) }
+                await self.send(text)
+            }
+        }
+        // The countdown must not end the microphone mid-turn: while a run is
+        // going, silence means the user is listening, not gone.
+        speech.shouldKeepListening = { [weak self] in self?.isWorking ?? false }
+        speech.onSpeechFinished = { [weak self] in
+            Task { await self?.resumeVoice() }
+        }
         speechObserver = speech.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
 #if os(iOS)
         let watchController = WatchConnectivityController()
-        watchController.messageHandler = { [weak self] text in
+        watchController.messageHandler = { [weak self] text, requestID in
             guard let self else { return "JARVIS ist gerade nicht verfügbar." }
-            return await self.sendFromWatch(text)
+            return await self.sendFromWatch(text, requestID: requestID)
         }
         watchConnectivityController = watchController
 #endif
@@ -255,6 +379,7 @@ final class AppModel: ObservableObject {
         return normalized.contains("jarvis.local")
             || normalized.hasSuffix(":8765")
             || normalized.hasSuffix(":8766")
+            || normalized == "http://macbook-air-von-marlon.tailfb3c35.ts.net:8770"
     }
 
     /// Pull the bare token out of whatever was pasted into the token field.
@@ -291,12 +416,57 @@ final class AppModel: ObservableObject {
     func saveSettings() {
         serverURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         token = Self.sanitizeToken(token)
-        conversation = conversation.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(serverURL, forKey: "serverURL")
         UserDefaults.standard.set(speaksReplies, forKey: "speaksReplies")
         UserDefaults.standard.set(conversation, forKey: "conversation")
         KeychainStore.save(token: token)
         saveAppearanceSettings()
+    }
+
+    func startNewConversation() {
+        guard !isWorking else { return }
+        if speech.isListening { _ = speech.stop() }
+        input = ""
+        lastError = nil
+
+        let newConversation = ChatConversation(
+            id: Self.makeConversationID(),
+            title: "Neuer Chat",
+            messages: [Self.makeWelcomeMessage()],
+            updatedAt: Date()
+        )
+        conversation = newConversation.id
+        messages = newConversation.messages
+        conversations.insert(newConversation, at: 0)
+        storeChatHistory()
+    }
+
+    func selectConversation(_ id: String) {
+        guard !isWorking, id != conversation,
+              let selected = conversations.first(where: { $0.id == id }) else { return }
+        if speech.isListening { _ = speech.stop() }
+        input = ""
+        lastError = nil
+        conversation = selected.id
+        messages = selected.messages.isEmpty ? [Self.makeWelcomeMessage()] : selected.messages
+        UserDefaults.standard.set(conversation, forKey: "conversation")
+    }
+
+    func deleteConversation(_ id: String) {
+        guard !isWorking else { return }
+        conversations.removeAll { $0.id == id }
+
+        if id == conversation {
+            if let next = conversations.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
+                conversation = next.id
+                messages = next.messages.isEmpty ? [Self.makeWelcomeMessage()] : next.messages
+                UserDefaults.standard.set(conversation, forKey: "conversation")
+            } else {
+                startNewConversation()
+                return
+            }
+        }
+        storeChatHistory()
     }
 
     func saveAppearanceSettings() {
@@ -345,7 +515,7 @@ final class AppModel: ObservableObject {
     func checkConnection() async {
         connection = .checking
         do {
-            let client = try JarvisAPIClient(urlString: serverURL, token: token)
+            let client = try makeClient()
             let health = try await client.health()
             if health.mac == "sleeping_or_off" {
                 connection = .sleeping
@@ -359,7 +529,7 @@ final class AppModel: ObservableObject {
 
     func wakeMac() async {
         do {
-            let client = try JarvisAPIClient(urlString: serverURL, token: token)
+            let client = try makeClient()
             try await client.wake()
             connection = .checking
             try? await Task.sleep(for: .seconds(4))
@@ -374,7 +544,7 @@ final class AppModel: ObservableObject {
         isLoadingFiles = true
         defer { isLoadingFiles = false }
         do {
-            let client = try JarvisAPIClient(urlString: serverURL, token: token)
+            let client = try makeClient()
             let listing = try await client.files(path: path)
             files = listing.items
             filePath = listing.path
@@ -386,53 +556,177 @@ final class AppModel: ObservableObject {
 
     func download(_ item: JarvisAPIClient.FileItem) async {
         do {
-            let client = try JarvisAPIClient(urlString: serverURL, token: token)
+            let client = try makeClient()
             downloadedFile = try await client.download(path: item.path, name: item.name)
         } catch {
             lastError = error.localizedDescription
         }
     }
 
+    func setVoiceForeground(_ active: Bool) async {
+        voiceForeground = active
+        if active { await resumeVoice() } else { speech.suspend() }
+    }
+
+    func setTyping(_ typing: Bool) async {
+        voiceModeEnabled = !typing
+        if typing { speech.suspend() } else { await resumeVoice() }
+    }
+
+    private func resumeVoice() async {
+        guard voiceModeEnabled, voiceForeground, !showingSettings, !token.isEmpty else { return }
+        if speech.interruptsBySpeaking {
+            // Continuous listening: no waiting for the turn to finish. This
+            // path must always end in a live microphone, so it never returns
+            // early on a device without echo cancellation.
+            await speech.listenThrough()
+            return
+        }
+        guard !isWorking, !speech.isSpeaking else { return }
+        await speech.start()
+    }
+
     func send(_ explicitText: String? = nil) async {
         let text = (explicitText ?? input).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isWorking else { return }
+        if speech.interruptsBySpeaking {
+            // Keep hearing the user through thinking and speaking alike.
+            await speech.listenThrough()
+        } else {
+            speech.suspend()
+        }
         input = ""
         lastError = nil
         appendMessage(ChatMessage(role: .user, text: text))
+        // The picture belongs to this turn only, so it is taken now and the
+        // composer cleared: a stale one must not ride along with the next
+        // question.
+        let attachedImage = pendingImagePath
+        discardPendingImage()
         isWorking = true
-        defer { isWorking = false }
+        let id = UUID().uuidString
+        activeRunID = id
+        activityLabel = "Ich denke nach"
+        liveResponse = ""
+        var sentences = SpeechSentenceBuffer()
+        var announcedTool = false
+        let shouldSpeak = speaksReplies && voiceForeground
         do {
-            let client = try JarvisAPIClient(urlString: serverURL, token: token)
-            let response = try await client.chat(message: text, conversation: conversation)
+            let client = try makeClient()
+            if shouldSpeak { speech.beginStream(client: client) }
+            let conversationID = conversation
+            let pending = Task {
+                try await client.chatStreaming(message: text, conversation: conversationID,
+                                               clientRunID: id, imagePath: attachedImage) { [weak self] frame in
+                    guard let self, self.activeRunID == id else { return }
+                    if frame.type == "delta", let delta = frame.text {
+                        self.liveResponse += delta
+                        self.activityLabel = "Ich antworte"
+                        let ready = sentences.append(delta)
+                        if shouldSpeak && self.voiceForeground {
+                            for sentence in ready { self.speech.enqueueSentence(sentence) }
+                        }
+                    } else if frame.type == "activity", let phase = frame.phase {
+                        self.activityLabel = JarvisAPIClient.Activity(phase: phase, tool: frame.tool ?? "").label
+                        if phase == "tool", !announcedTool, self.liveResponse.isEmpty,
+                           shouldSpeak, self.voiceForeground {
+                            announcedTool = true
+                            let tool = (frame.tool ?? "").lowercased()
+                            let feedback = tool.contains("search") || tool.contains("web") || tool.contains("browser")
+                                ? "Ich schaue im Web nach." : "Ich prüfe das."
+                            self.speech.enqueueSentence(feedback)
+                        }
+                    }
+                }
+            }
+            chatTask = pending
+            let response = try await pending.value
+            guard activeRunID == id else { return }
+            activeRunID = nil
+            chatTask = nil
+            isWorking = false
             let names = response.tools.map(\.name)
-            appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names))
+            appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names,
+                                      attachments: response.messageAttachments))
             connection = .online
-            if speaksReplies { speech.speak(response.text) }
+            liveResponse = ""
+            if shouldSpeak && voiceForeground {
+                for sentence in sentences.finish(finalText: response.text) { speech.enqueueSentence(sentence) }
+                speech.endStream()
+            } else {
+                speech.stopSpeaking()
+                await resumeVoice()
+            }
         } catch {
+            guard activeRunID == id else { return }
+            activeRunID = nil
+            chatTask = nil
+            isWorking = false
+            speech.stopSpeaking()
+            liveResponse = ""
             lastError = error.localizedDescription
             connection = .offline(error.localizedDescription)
             appendMessage(ChatMessage(role: .system, text: error.localizedDescription))
         }
     }
 
+    /// Stops the running Hermes turn, not just the local URLSession request.
+    /// Barge-in reuses this: the user talking over the answer is a redirection,
+    /// so the turn ends silently rather than announcing a cancellation.
+    private func cancelActiveRun(announcing: Bool) async {
+        guard let id = activeRunID else { return }
+        do {
+            let client = try makeClient()
+            try await client.stop(clientRunID: id)
+            guard activeRunID == id else { return }
+            activeRunID = nil
+            chatTask?.cancel()
+            chatTask = nil
+            isWorking = false
+            liveResponse = ""
+            if announcing {
+                appendMessage(ChatMessage(role: .system, text: "Anfrage abgebrochen."))
+            }
+        } catch { lastError = error.localizedDescription }
+    }
+
     func toggleListening() async {
-        if speech.isListening {
+        if isWorking, activeRunID != nil {
+            speech.suspend()
+            await cancelActiveRun(announcing: true)
+            await resumeVoice()
+        } else if speech.isSpeaking {
+            speech.stopSpeaking()
+            await resumeVoice()
+        } else if speech.isListening {
             if let text = speech.stop() { await send(text) }
+            else { voiceModeEnabled = false }
         } else {
-            await speech.start()
+            voiceModeEnabled = true
+            await resumeVoice()
         }
     }
 
 #if os(iOS)
-    private func sendFromWatch(_ text: String) async -> String {
+    private func sendFromWatch(_ text: String, requestID: String) async -> String {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanText.isEmpty else { return "Ich habe nichts verstanden." }
 
         appendMessage(ChatMessage(role: .user, text: cleanText))
         do {
-            let client = try JarvisAPIClient(urlString: serverURL, token: token)
-            let response = try await client.chat(message: cleanText, conversation: conversation)
-            appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: response.tools.map(\.name)))
+            let client = try makeClient()
+            var sentences = SpeechSentenceBuffer()
+            let response = try await client.chatStreaming(message: cleanText, conversation: conversation, clientRunID: requestID) { [weak self] frame in
+                guard frame.type == "delta", let delta = frame.text else { return }
+                for sentence in sentences.append(delta) {
+                    self?.watchConnectivityController?.deliverSentence(sentence, id: requestID)
+                }
+            }
+            for sentence in sentences.finish(finalText: response.text) {
+                watchConnectivityController?.deliverSentence(sentence, id: requestID)
+            }
+            appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: response.tools.map(\.name),
+                                       attachments: response.messageAttachments))
             connection = .online
             return response.text
         } catch {
@@ -449,5 +743,82 @@ final class AppModel: ObservableObject {
         if overflow > 0 {
             messages.removeFirst(overflow)
         }
+        updateActiveConversation(using: message)
+    }
+
+    private func restoreChatHistory() {
+        conversations = ChatHistoryStore.load()
+            .compactMap { stored -> ChatConversation? in
+                let id = stored.id.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !id.isEmpty, id.count <= 80 else { return nil }
+                let title = stored.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                return ChatConversation(
+                    id: id,
+                    title: title.isEmpty ? "Neuer Chat" : title,
+                    messages: Array(stored.messages.suffix(Self.maximumMessageCount)),
+                    updatedAt: stored.updatedAt
+                )
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(Self.maximumConversationCount - 1)
+            .map { $0 }
+
+        let initial = ChatConversation(
+            id: conversation,
+            title: "Neuer Chat",
+            messages: [Self.makeWelcomeMessage()],
+            updatedAt: Date()
+        )
+        messages = initial.messages
+        conversations.insert(initial, at: 0)
+        // Do not persist an untouched launch placeholder. It is archived by
+        // appendMessage as soon as the user actually starts this conversation.
+    }
+
+    private func updateActiveConversation(using message: ChatMessage) {
+        let now = Date()
+        let title = message.role == .user ? Self.title(for: message.text) : nil
+
+        if let index = conversations.firstIndex(where: { $0.id == conversation }) {
+            conversations[index].messages = messages
+            conversations[index].updatedAt = now
+            if conversations[index].title == "Neuer Chat", let title {
+                conversations[index].title = title
+            }
+        } else {
+            conversations.append(ChatConversation(
+                id: conversation,
+                title: title ?? "Neuer Chat",
+                messages: messages,
+                updatedAt: now
+            ))
+        }
+        storeChatHistory()
+    }
+
+    private func storeChatHistory() {
+        conversations.sort { $0.updatedAt > $1.updatedAt }
+        if conversations.count > Self.maximumConversationCount {
+            conversations.removeLast(conversations.count - Self.maximumConversationCount)
+        }
+        UserDefaults.standard.set(conversation, forKey: "conversation")
+        ChatHistoryStore.save(conversations)
+    }
+
+    private static func title(for text: String) -> String {
+        let compact = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard compact.count > 48 else { return compact }
+        return String(compact.prefix(47)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private static func makeWelcomeMessage() -> ChatMessage {
+        ChatMessage(role: .jarvis, text: "System bereit. Womit darf ich helfen?")
+    }
+
+    private static func makeConversationID() -> String {
+        "jarvis-apple-\(UUID().uuidString.lowercased())"
     }
 }

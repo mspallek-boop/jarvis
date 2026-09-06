@@ -55,9 +55,11 @@ Use this for a reachability probe that must not require a token.
 ### `POST /chat` — auth
 Request:
 ```json
-{"message": "…", "conversation": "jarvis-apple"}
+{"message": "…", "conversation": "jarvis-apple", "client_run_id": "dash_9f2c…"}
 ```
 - `message`: required, 1–20 000 chars.
+- `client_run_id`: optional correlation id, `[A-Za-z0-9_.:-]`, max 64 chars.
+  Pass one if you want to be able to cancel this turn; see `POST /stop`.
 - `conversation`: optional, defaults to `jarvis-apple`, max 80 chars. Acts as
   the session key; the bridge maps it to a Hermes session and serializes
   concurrent turns per conversation with a lock.
@@ -74,11 +76,46 @@ If the stored Hermes session has expired the bridge transparently retries once
 with a fresh session, so the client does not need to handle session rotation.
 
 ### `POST /stop` — auth
+
+Two addressing modes; supply **exactly one**. Supplying both is a `400`.
+
 ```json
 {"run_id": "run_…"}
 ```
-Returns Hermes's stop payload, or `{"status": "stopped"}` if the response is not
-JSON.
+```json
+{"client_run_id": "dash_9f2c…"}
+```
+
+`run_id` is unchanged, for a client that already holds one.
+
+`client_run_id` (added 2026-09-04) exists because `POST /chat` is synchronous:
+it returns `run_id` only after the turn ends, so a client cannot use it to
+cancel the turn that is actually running. Pass an arbitrary correlation id of
+your own on `POST /chat` (optional, `[A-Za-z0-9_.:-]`, max 64 chars) and cancel
+with the same value.
+
+**There is deliberately no way to cancel "the conversation".** A conversation is
+shared by the iPhone app, the Mac app and the dashboard at once, so a
+conversation-scoped stop would cancel whichever surface happened to be running —
+possibly someone else's turn. A caller can only ever cancel its own run.
+
+A cancel that arrives before Hermes emits `run.started` is recorded and applied
+the moment the run appears; if the turn is still queued behind another client's
+turn it never starts at all.
+
+Responses (all `200` unless noted):
+
+| Case | Body |
+|---|---|
+| Hermes reported the run stopped | `{"status": "stopped", "stopped": true, "run_id": "run_…"}` |
+| Hermes accepted the interrupt | `{"status": "stopping", "stopped": false, "run_id": "run_…"}` |
+| Turn not started yet | `{"status": "pending", "stopped": false, "error": "…"}` |
+| No such client_run_id | `{"status": "unknown", "stopped": false, "error": "…"}` |
+| Neither field / both fields / malformed id | `400 {"error": "…"}` |
+
+`stopped` is `true` **only** when Hermes confirmed the run is dead. `"stopping"`
+means the interrupt was accepted, not that the run has ended — do not report a
+successful cancellation to the user on that basis.
 
 ### `POST /wake` — auth
 No body required. With no relay configured returns `{"awake": true, "relay": false}`.
@@ -216,3 +253,139 @@ LaunchAgent are byte-identical to the repo copies.
        200   GET  /health  with token → hermes 0.20.6, 0.22 s
        200   POST /chat → {"text":"DEPLOY OK","run_id":"run_9e8210c8…"}, 39.3 s
 ```
+
+## Native Erweiterungen vom 2026-09-06 (vorbereitet)
+
+`GET /activity?client_run_id=<ID>` benötigt denselben App-Bearer wie `/chat`.
+Antwort: `{"phase":"tool","tool":"web_search"}`. Phasen: `queued`, `thinking`,
+`tool`, `answering`, `stopping`, `unknown`. Nur aktive korrelierte Aufträge
+werden gehalten; `unknown` bedeutet nicht nachgewiesenen Erfolg. Keine Texte,
+Tool-Argumente oder internen Hermes-Run-IDs im Status. Eine ID ist keine
+separate Benutzerberechtigung: wie bisher gilt das gemeinsame App-Token.
+
+`POST /speech`, JSON `{"text":"Hallo"}`, benötigt App-Bearer und 1–600
+Unicode-Codepoints. Die Bridge leitet ausschließlich an `127.0.0.1:8788` weiter,
+ohne HTTP-Proxies, Redirects oder Hermes-Key. Antwort ist
+`application/x-ndjson`: Audioframes mit `sample_rate:24000`,
+`format:"pcm_s16le"` und Base64-`data`, gefolgt von `{"type":"done"}`.
+`429` bedeutet belegt; `503` bedeutet Worker nicht verfügbar. Ein Fehler nach
+HTTP-200 erscheint als Errorframe. Der Client darf ohne Done nicht von einer
+vollständigen Ausgabe ausgehen.
+
+Dauerhafte Aktivierung dieser Erweiterungen ist aktuell noch durch die
+angefragte ausdrückliche Dienstfreigabe blockiert. Sie sind getestet und in
+Build 8 integriert, aber noch nicht in `~/.hermes/services/` ausgerollt.
+
+## Stimmenauswahl (2026-09-06)
+
+Zwei Ergänzungen. Der Anbieter-API-Key bleibt auf dem Mac; die App sieht nur
+Namen und Kennungen.
+
+### `GET /voices`
+
+Bearer-Token wie überall. Antwort:
+
+```json
+{
+  "provider": "elevenlabs",
+  "voices": [
+    {"id": "onwK4e9ZLuTAKqWW03F9", "name": "Daniel - Steady Broadcaster",
+     "accent": "british", "gender": "male", "description": "formal"}
+  ],
+  "selected": "onwK4e9ZLuTAKqWW03F9"
+}
+```
+
+`provider` ist `local` oder `elevenlabs`; bei `local` ist `voices` leer.
+`selected` ist die auf dem Mac konfigurierte Vorgabe. Die Liste wird 15 Minuten
+zwischengespeichert; `?refresh=1` erzwingt einen Neuabruf. Fällt der Anbieter
+aus, kommt `503` mit `{"error": ...}` — die App muss dann ihre Auswahl behalten
+und nicht zurücksetzen.
+
+### `POST /speech` nimmt jetzt `voice_id`
+
+```json
+{"text": "Guten Abend, sir.", "voice_id": "JBFqnCBsd6RMkjVDRZzb"}
+```
+
+`voice_id` ist optional. Fehlt es oder ist es leer, gilt die Mac-Vorgabe.
+
+Die Bridge prüft die Kennung gegen die Liste aus `/voices`, bevor sie den
+Anbieter aufruft — sonst könnte ein Client das Kontingent des Nutzers auf
+beliebige Kennungen verbrauchen. Ist der Katalog gerade nicht abrufbar, greift
+die Mac-Vorgabe statt eines Fehlers.
+
+Fehlercodes:
+
+| Code | Bedeutung | Verhalten der App |
+|---|---|---|
+| `400` | Kennung syntaktisch ungültig oder nicht im Konto | Auswahl zurücksetzen, Liste neu laden |
+| `402` | Bibliotheks-Stimme, Tarif erlaubt sie nicht | Meldung zeigen, vorinstallierte Stimme anbieten |
+| `429` | Kontingent erschöpft | Auf Systemstimme zurückfallen |
+| `503` | Anbieter nicht erreichbar | Auf Systemstimme zurückfallen |
+
+Der `402`-Fall ist kein Randfall: `/voices` listet Bibliotheks-Stimmen in jedem
+Tarif auf, aber nur bezahlte Tarife dürfen mit ihnen sprechen. Die Liste allein
+ist also keine Zusage, dass eine Stimme funktioniert.
+
+### Datum und Uhrzeit in jedem Turn
+
+`POST /chat` und `/chat/stream` stellen der Nachricht eine Kontextzeile voran:
+
+```
+[Kontext: Sonntag, 6. September 2026, 18:13 Uhr]
+```
+
+Das Modell hat sonst keine Uhr und erfindet den Wochentag. Die App muss dafür
+nichts tun; die Zeile entsteht in der Bridge und erscheint nicht in der
+Antwort.
+
+## Anhänge und eingefügte Bilder (2026-09-06)
+
+### Antworten tragen `attachments`
+
+`/chat` und der `done`-Frame von `/chat/stream` enthalten zusätzlich:
+
+```json
+"attachments": [
+  {"kind": "image",  "url": "https://…/eisvogel.jpeg", "title": "nabu.de"},
+  {"kind": "video",  "url": "https://youtu.be/…",      "title": "youtu.be"},
+  {"kind": "source", "url": "https://…/portraet/",     "title": "NABU"}
+]
+```
+
+Die Bridge liest sie aus dem Antworttext: Markdown-Bilder und -Links sowie
+nackte URLs. `kind` folgt der Endung beziehungsweise dem Host; alles
+Unbekannte wird `source`. Höchstens zwölf Einträge, Reihenfolge wie im Text,
+Doppelte einmal.
+
+**Nur `http` und `https` überleben.** Ein `file:`- oder `data:`-Verweis aus
+einer Antwort würde sonst ins Gerät greifen oder beliebige Bytes einbetten.
+
+Der Antworttext bleibt unverändert. Die App entfernt Links vor der
+Sprachausgabe (`SpeechText.withoutLinks`), weil eine vorgelesene URL
+unerträglich ist; angezeigt wird der Text vollständig.
+
+### `POST /upload`
+
+```json
+{"data": "<base64 des Bildes>"}
+```
+
+Antwort `{"path": "/Users/…/.hermes/jarvis-uploads/<hex>.png", "name": "<hex>.png"}`.
+
+Der Typ wird **an den Magic Bytes** erkannt, nie am Namen oder an einer
+Angabe des Clients: PNG, JPEG, GIF, WebP, HEIC. Alles andere ergibt `400`.
+Höchstens 10 MB. Der Zielordner ist fest, der Dateiname wird erzeugt
+(`secrets.token_hex`), Ordner `0700`, Datei `0600`.
+
+### `POST /chat` und `/chat/stream` nehmen `image_path`
+
+```json
+{"message": "Was ist das?", "conversation": "…", "image_path": "/Users/…/jarvis-uploads/<hex>.png"}
+```
+
+Die Bridge prüft, dass der Pfad **innerhalb des Uploadordners** liegt, und
+stellt der Nachricht dann eine Zeile voran, die den Agenten auf
+`vision_analyze` verweist. Jeder andere Pfad ergibt `400` — sonst wäre das ein
+Weg, den Agenten beliebige Dateien auf dem Mac lesen zu lassen.

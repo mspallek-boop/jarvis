@@ -1,0 +1,150 @@
+name: JARVIS
+options:
+  bundleIdPrefix: at.marlon.jarvis
+  postGenCommand: python3 scripts/fix_watch_embedding.py
+  fileTypes:
+    icon:
+      file: true
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+    watchOS: "10.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: 13
+    MARKETING_VERSION: 0.3.0
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+targets:
+  JARVIS-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Resources/iOS
+    info:
+      path: Config/JARVIS-iOS-Info.plist
+      properties:
+        CFBundleDisplayName: JARVIS
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSMicrophoneUsageDescription: JARVIS nutzt das Mikrofon nur während du sprichst.
+        NSSpeechRecognitionUsageDescription: JARVIS wandelt deine Sprache lokal über Apples Spracherkennung in Text um.
+        NSLocalNetworkUsageDescription: JARVIS verbindet sich privat mit Hermes auf deinem Mac.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: at.marlon.jarvis.ios
+        PRODUCT_NAME: JARVIS
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: V86U93FGU3
+    entitlements:
+      path: Config/JARVIS.entitlements
+    dependencies:
+      - target: JARVIS-Watch
+        embed: true
+  JARVIS-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - path: Resources/macOS
+        excludes:
+          - Assets.xcassets
+          - JARVISIconForeground.png
+    info:
+      path: Config/JARVIS-macOS-Info.plist
+      properties:
+        CFBundleDisplayName: JARVIS
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSMicrophoneUsageDescription: JARVIS nutzt das Mikrofon nur während du sprichst.
+        NSSpeechRecognitionUsageDescription: JARVIS wandelt deine Sprache über Apples Spracherkennung in Text um.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: at.marlon.jarvis.macos
+        PRODUCT_NAME: JARVIS
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        DEVELOPMENT_TEAM: V86U93FGU3
+        ENABLE_HARDENED_RUNTIME: YES
+    entitlements:
+      path: Config/JARVIS-macOS.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
+  JARVIS-Watch:
+    # A modern SwiftUI watchOS app contains its own executable. The legacy
+    # application.watchapp2 type is only a stub for a separate Watch extension.
+    type: application
+    platform: watchOS
+    sources:
+      - WatchApp
+      - Sources/Views/OrbView.swift
+      - Resources/watchOS/Raw
+    info:
+      path: Config/JARVIS-Watch-Info.plist
+      properties:
+        CFBundleDisplayName: JARVIS
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        CFBundleIcons:
+          CFBundlePrimaryIcon:
+            CFBundleIconFiles:
+              - AppIcon
+            CFBundleIconName: AppIcon
+        WKCompanionAppBundleIdentifier: at.marlon.jarvis.ios
+        WKRunsIndependentlyOfCompanionApp: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: at.marlon.jarvis.ios.watchkitapp
+        PRODUCT_NAME: $(TARGET_NAME)
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: V86U93FGU3
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: JARVIS-WatchComplication
+        embed: true
+  JARVIS-WatchComplication:
+    # WidgetKit extension. watchOS complications can only ship from an
+    # extension, never from the watch app target itself.
+    type: app-extension
+    platform: watchOS
+    sources:
+      - WatchComplication
+    info:
+      path: Config/JARVIS-WatchComplication-Info.plist
+      properties:
+        CFBundleDisplayName: JARVIS
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: at.marlon.jarvis.ios.watchkitapp.launcher
+        PRODUCT_NAME: $(TARGET_NAME)
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: V86U93FGU3
+        SKIP_INSTALL: YES
+schemes:
+  JARVIS-iOS:
+    build:
+      targets:
+        JARVIS-iOS: all
+  JARVIS-macOS:
+    build:
+      targets:
+        JARVIS-macOS: all
+  JARVIS-Watch:
+    build:
+      targets:
+        JARVIS-Watch: all

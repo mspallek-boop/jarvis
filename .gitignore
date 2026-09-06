@@ -25,6 +25,7 @@ Thumbs.db
 nohup.out
 
 # Apple/Xcode local state
+apple/build/
 apple/JARVIS.xcodeproj/project.xcworkspace/xcuserdata/
 apple/JARVIS.xcodeproj/xcuserdata/
 apple/DerivedData*/

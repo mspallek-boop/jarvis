@@ -1,5 +1,15 @@
 # Zielarchitektur: JARVIS überall
 
+## Aktuelle Entscheidung vom 2026-09-06
+
+Der Nutzer hat die Cloud-Planung beendet. Der aktuelle Ausbau nutzt den
+vorhandenen Mac am Netzteil. Ein vorbereiteter `caffeinate -s`-LaunchAgent
+kann den Systemschlaf verhindern und den Bildschirm schlafen lassen; seine
+dauerhafte Aktivierung wartet auf ausdrückliche Freigabe. Echter Systemschlaf
+oder ein geschlossener Deckel sind dadurch nicht als erreichbar garantiert.
+Die folgende Relay-Architektur beschreibt weiterhin eine mögliche spätere
+Erweiterung mit zusätzlicher Hardware, nicht den derzeit installierten Aufbau.
+
 ```text
 iPhone JARVIS App
         │

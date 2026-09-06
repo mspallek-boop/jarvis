@@ -24,25 +24,6 @@
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
-		<!-- The bridge is reached over Tailscale at
-		     <host>.<tailnet>.ts.net:8770 over plain HTTP. Confidentiality comes
-		     from the WireGuard tunnel, not from TLS, and the tailnet is not
-		     reachable from the public internet. NSAllowsLocalNetworking does
-		     not cover ts.net (it is neither .local nor link-local), so without
-		     this exception every request fails with "App Transport Security
-		     policy requires the use of a secure connection".
-		     Scoped to ts.net deliberately — NSAllowsArbitraryLoads would drop
-		     ATS for every host the app ever talks to. -->
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>ts.net</key>
-			<dict>
-				<key>NSIncludesSubdomains</key>
-				<true/>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-		</dict>
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>JARVIS nutzt das Mikrofon nur während du sprichst.</string>

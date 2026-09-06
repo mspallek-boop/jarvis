@@ -11,9 +11,12 @@ deterministic and runnable on a machine with no GPU and no cloud keys.
 from __future__ import annotations
 
 import importlib.util
+import os
+import socket
 import sys
 import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -64,14 +67,66 @@ def _install_stubs() -> None:
 
 
 @pytest.fixture(scope="session")
-def server_mod():
+def network_guard():
+    """Block real IP traffic (including localhost) and DNS, not ASGI/socketpair.
+
+    Record attempts too: a production handler may catch the raised exception;
+    the test must still fail if it forgot to stub a backend.
+    """
+    attempts = []
+
+    def blocked(*args, **kwargs):
+        attempts.append("unstubbed network operation")
+        raise AssertionError("Offline test attempted network access; stub the backend")
+
+    def guard_ip(original):
+        def guarded(sock, *args, **kwargs):
+            if sock.family in (socket.AF_INET, socket.AF_INET6):
+                return blocked()
+            return original(sock, *args, **kwargs)
+        return guarded
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(socket, "getaddrinfo", blocked)
+        patch.setattr(socket, "gethostbyname", blocked)
+        patch.setattr(socket, "gethostbyname_ex", blocked)
+        patch.setattr(socket, "gethostbyaddr", blocked)
+        for name in ("connect", "connect_ex", "sendto", "sendall", "send"):
+            patch.setattr(socket.socket, name, guard_ip(getattr(socket.socket, name)))
+        yield attempts
+    assert not attempts, "Suite attempted real network access"
+
+
+@pytest.fixture(autouse=True)
+def offline_network(network_guard):
+    before = len(network_guard)
+    yield
+    assert len(network_guard) == before, "Test attempted real network access"
+
+
+@pytest.fixture(scope="session")
+def server_mod(network_guard):
     """Import server.py exactly once with heavy deps stubbed out."""
     _install_stubs()
     spec = importlib.util.spec_from_file_location("jarvis_server", SERVER_PY)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["jarvis_server"] = mod
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    # The production loader reads ~/.hermes/.env at import time. Tests must not
+    # inherit credentials or local service configuration from either env file.
+    env_paths = {Path.home() / ".hermes" / ".env", SERVER_PY.parent / ".env"}
+    exists = Path.exists
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+        Path, "exists", lambda path: False if path in env_paths else exists(path)
+    ):
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
+
+
+@pytest.fixture(autouse=True)
+def isolated_server_files(server_mod, monkeypatch, tmp_path):
+    """Keep test usage/session/latency state independent of real local files."""
+    for name in ("LOG_PATH", "STATE_PATH", "USAGE_PATH", "FIRED_PATH"):
+        monkeypatch.setattr(server_mod, name, tmp_path / (name.lower() + ".json"))
 
 
 @pytest.fixture()

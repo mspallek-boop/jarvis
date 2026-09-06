@@ -175,9 +175,14 @@ def test_summon_glance_broadcasts_items(no_token, server_mod, client):
 # --------------------------------------------------------------------------- #
 # Dashboard TLS reverse-proxy auth gate                                        #
 # --------------------------------------------------------------------------- #
-def test_dashboard_proxy_401_without_token(with_token, dash_client):
+def test_dashboard_proxy_401_without_token(with_token, dash_client, monkeypatch):
+    from unittest.mock import Mock
+
+    backend = Mock(side_effect=AssertionError("Auth gate must reject before proxying"))
+    monkeypatch.setattr(with_token.requests, "request", backend)
     r = dash_client.get("/", follow_redirects=False)
     assert r.status_code == 401
+    backend.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #
