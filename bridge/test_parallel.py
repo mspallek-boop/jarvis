@@ -124,3 +124,73 @@ def test_a_failing_turn_still_frees_its_lane():
     client._chat_once = lambda text, conversation, *a, **k: {
         "text": text, "tools": [], "run_id": "r"}
     assert client.chat("m", "conv", "run-last", parallel=True)["conversation"] == "conv"
+
+
+# ------------------------------------------- a parallel lane keeps the thread
+
+def client_with_history(messages):
+    """A client whose main conversation already has a transcript."""
+    client = bridge.HermesClient(SimpleNamespace(state_path=None))
+    client._load_state = lambda: {"conv": "session-main"}
+    sent = []
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+        def read(self):
+            import json as _json
+            return _json.dumps(self._payload).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+
+    client._request = lambda method, path, *a, **k: Response({"data": messages})
+    client._chat_once = lambda text, conversation, *a, **k: (
+        sent.append((conversation, text)) or {"text": "ok", "tools": [], "run_id": "r"})
+    client._sent = sent
+    return client
+
+
+HISTORY = [{"role": "user", "content": "Recherchiere bitte Flüge nach Tokio"},
+           {"role": "assistant", "content": "Ich sehe mir das an."},
+           {"role": "tool", "content": "{\"raw\": \"tool noise\"}"}]
+
+
+def test_a_side_lane_is_told_what_was_just_discussed():
+    """Otherwise a new task starts blind — "he forgets everything"."""
+    client = client_with_history(HISTORY)
+    client._chat_once = lambda text, conversation, *a, **k: (
+        client._sent.append((conversation, text)) or {"text": "ok", "tools": [], "run_id": "r"})
+    # Occupy the main lane so the next turn is forced into a side lane.
+    client._lock_for("conv").acquire()
+    client.chat("Schreib Rici", "conv", "run-2", parallel=True)
+    conversation, text = client._sent[-1]
+    assert conversation == "conv#2"
+    assert "Tokio" in text and "Schreib Rici" in text
+    assert "tool noise" not in text          # tool traffic is noise out of context
+
+
+def test_the_main_conversation_never_gets_a_preamble():
+    client = client_with_history(HISTORY)
+    client.chat("Was war das nochmal?", "conv", "run-1")
+    conversation, text = client._sent[-1]
+    assert conversation == "conv"
+    assert text == "Was war das nochmal?"    # its own session already remembers
+
+
+def test_context_failures_never_block_the_turn():
+    client = client_with_history(HISTORY)
+    client._request = lambda *a, **k: (_ for _ in ()).throw(OSError("hermes weg"))
+    client._lock_for("conv").acquire()
+    result = client.chat("Neue Aufgabe", "conv", "run-2", parallel=True)
+    assert result["conversation"] == "conv#2"
+    assert client._sent[-1][1] == "Neue Aufgabe"
+
+
+def test_the_preamble_is_bounded():
+    long_history = [{"role": "user", "content": "x" * 5000} for _ in range(20)]
+    client = client_with_history(long_history)
+    client._lock_for("conv").acquire()
+    client.chat("kurz", "conv", "run-2", parallel=True)
+    assert len(client._sent[-1][1]) < 3000

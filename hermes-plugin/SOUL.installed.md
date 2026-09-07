@@ -127,11 +127,20 @@ phone number they already have stored:
 
     /Users/marlon/Documents/JARVIS/scripts/jarvis-contact.sh rici
 
-It prints one line per match: name, the stored number, and the ready-to-use
-chat id. On exactly one match, use it. On several matches, show the names and
-numbers and ask which one — two people share a first name more often than you
-would think. On no match, say the contact was not found rather than inventing a
-number.
+**Read the exit code, not just the text.** It is the whole safety mechanism:
+
+- `0` — exactly one match. Its line is the recipient. Safe to use.
+- `10` — several matches, printed as a numbered list. **You may not send.** Show
+  the user the list and ask which one. Then run the same query again with
+  `--pick <Nummer>`, and use the single line that comes back.
+- `1` — nothing found. Say so. Never invent a number, never fall back to a
+  contact that merely looks similar.
+- `3` — no access to the contacts. Say that, and that
+  `jarvis-contact.sh --refresh` in a normal Terminal fixes it.
+
+"rici" matches two people and "mar" matches thirty-nine. Picking one yourself is
+how a message reaches a stranger, and a message sent to the wrong person cannot
+be taken back. If you are choosing between people, you are already wrong — ask.
 
 When the user gives you a number instead of a name ("schreib an +49 170 1234567"),
 hand that number to the same script — it converts any format the user might say

@@ -27,10 +27,21 @@ CACHE="${HOME}/.hermes/contacts.cache.tsv"
 # stranger. Override with JARVIS_DEFAULT_COUNTRY=43.
 DEFAULT_COUNTRY="${JARVIS_DEFAULT_COUNTRY:-49}"
 
+PICK=""
+if [[ "${1:-}" == "--pick" ]]; then
+  PICK="${2:-}"
+  if [[ ! "${PICK}" =~ ^[0-9]+$ ]]; then
+    print -u2 "usage: jarvis-contact.sh --pick <Nummer> <Suchbegriff>"
+    exit 2
+  fi
+  shift 2
+fi
+
 QUERY="${*:-}"
 if [[ -z "${QUERY}" ]]; then
   print -u2 "usage: jarvis-contact.sh <name>            # Kontakt suchen"
   print -u2 "       jarvis-contact.sh +49 170 1234567   # Nummer -> Chat-ID"
+  print -u2 "       jarvis-contact.sh --pick 2 rici      # aus der Trefferliste waehlen"
   print -u2 "       jarvis-contact.sh --refresh         # Cache neu aufbauen"
   exit 2
 fi
@@ -120,7 +131,35 @@ fi
 # SQL-escape single quotes in the needle.
 NEEDLE="${QUERY//\'/\'\'}"
 
-FOUND=0
+
+# ---------------------------------------------------------------- Auswahl
+#
+# Ambiguity is the dangerous case, not the rare one: "rici" matches two people
+# and "mar" matches forty. The old version printed them all and exited 0, which
+# reads as success — and a caller that treats it as success picks one and sends
+# a message to a stranger. A message sent to the wrong person cannot be taken
+# back, so more than one match is now its own exit code, and choosing is a
+# separate, explicit step.
+#
+#   exit 0   exactly one match, safe to use
+#   exit 10  several matches, numbered — the caller must ask which
+#   exit 1   nothing found
+#   exit 3   no access to the contacts and no cache
+
+MATCHES=()
+
+collect() {
+  local NAME="$1" NUMBER="$2"
+  [[ -z "${NUMBER}" ]] && return
+  local DIGITS="${NUMBER//[^0-9+]/}"
+  case "${DIGITS}" in
+    +*)   DIGITS="${DIGITS#+}" ;;
+    00*)  DIGITS="${DIGITS#00}" ;;
+    0*)   DIGITS="${DEFAULT_COUNTRY}${DIGITS#0}" ;;
+  esac
+  MATCHES+=("${NAME:-(ohne Namen)}|${NUMBER}|${DIGITS}")
+}
+
 READABLE=0
 UNREADABLE=0
 for DB in "${DBS[@]}"; do
@@ -132,6 +171,9 @@ for DB in "${DBS[@]}"; do
     continue
   fi
   READABLE=$((READABLE + 1))
+  # The full name is matched as well as the parts: "Marcel Richter" is a first
+  # and a last name and matches neither column on its own, so without it the
+  # most precise query a caller can make is the one that fails.
   OUT=$(/usr/bin/sqlite3 -separator '|' "file://${DB}?immutable=1" "
     SELECT
       TRIM(COALESCE(r.ZFIRSTNAME,'') || ' ' || COALESCE(r.ZLASTNAME,'')),
@@ -143,54 +185,95 @@ for DB in "${DBS[@]}"; do
         LOWER(COALESCE(r.ZFIRSTNAME,''))    LIKE LOWER('%${NEEDLE}%') OR
         LOWER(COALESCE(r.ZLASTNAME,''))     LIKE LOWER('%${NEEDLE}%') OR
         LOWER(COALESCE(r.ZNICKNAME,''))     LIKE LOWER('%${NEEDLE}%') OR
-        LOWER(COALESCE(r.ZORGANIZATION,'')) LIKE LOWER('%${NEEDLE}%')
+        LOWER(COALESCE(r.ZORGANIZATION,'')) LIKE LOWER('%${NEEDLE}%') OR
+        LOWER(TRIM(COALESCE(r.ZFIRSTNAME,'') || ' ' || COALESCE(r.ZLASTNAME,''))) LIKE LOWER('%${NEEDLE}%')
       )
-    LIMIT 40;
+    LIMIT 60;
   " 2>/dev/null) || continue
-
   [[ -z "${OUT}" ]] && continue
-  while IFS='|' read -r NAME NUMBER; do
-    [[ -z "${NUMBER}" ]] && continue
-    # Strip everything but digits; turn a leading 00 or a national 0 into E.164.
-    DIGITS="${NUMBER//[^0-9+]/}"
-    case "${DIGITS}" in
-      +*)   DIGITS="${DIGITS#+}" ;;
-      00*)  DIGITS="${DIGITS#00}" ;;
-      0*)   DIGITS="${DEFAULT_COUNTRY}${DIGITS#0}" ;;   # no country code stored
-    esac
-    printf '%s | %s | %s@s.whatsapp.net\n' "${NAME:-(ohne Namen)}" "${NUMBER}" "${DIGITS}"
-    FOUND=1
-  done <<< "${OUT}"
+  while IFS='|' read -r NAME NUMBER; do collect "${NAME}" "${NUMBER}"; done <<< "${OUT}"
 done
 
 # Live databases unreadable (the usual case for the Hermes gateway): fall back
 # to the cache written by --refresh from a permitted context.
-if [[ ${FOUND} -eq 0 && ${READABLE} -eq 0 && -r "${CACHE}" ]]; then
-  while IFS=$'\t' read -r NAME NICK NUMBER DIGITS; do
-    if print -r -- "${NAME} ${NICK}" | /usr/bin/grep -qi -- "${QUERY}"; then
-      printf '%s | %s | %s@s.whatsapp.net\n' "${NAME:-${NICK:-(ohne Namen)}}" "${NUMBER}" "${DIGITS}"
-      FOUND=1
-    fi
-  done < "${CACHE}"
-  if [[ ${FOUND} -eq 1 ]]; then
-    AGE_DAYS=$(( ( $(date +%s) - $(/usr/bin/stat -f %m "${CACHE}") ) / 86400 ))
-    (( AGE_DAYS >= 30 )) && print -u2 "(Hinweis: Kontakt-Cache ist ${AGE_DAYS} Tage alt — 'jarvis-contact.sh --refresh' im Terminal aktualisiert ihn.)"
-    exit 0
-  fi
+if [[ ${#MATCHES} -eq 0 && ${READABLE} -eq 0 && -r "${CACHE}" ]]; then
+  # Parsed with awk, not `read`. Tab is a whitespace character, so `read` folds
+  # two consecutive tabs into one separator — and a contact with no nickname
+  # has exactly that. The fields then shift by one and the chat id comes out
+  # empty or wrong, which on the gateway (where the cache is the only path)
+  # means a message addressed to nobody, or worse, to someone else.
+  while IFS='|' read -r NAME NUMBER DIGITS; do
+    [[ -z "${DIGITS}" ]] && continue
+    MATCHES+=("${NAME:-(ohne Namen)}|${NUMBER}|${DIGITS}")
+  done < <(/usr/bin/awk -F'\t' -v q="${(L)QUERY}" '
+    { haystack = tolower($1 " " $2) }
+    index(haystack, q) > 0 && $4 != "" {
+      name = ($1 != "" ? $1 : $2)
+      print name "|" $3 "|" $4
+    }' "${CACHE}")
 fi
 
-if [[ ${FOUND} -eq 0 ]]; then
-  if [[ ${READABLE} -eq 0 ]]; then
-    if [[ -r "${CACHE}" ]]; then
-      print "Kein Kontakt gefunden für: ${QUERY} (im Cache gesucht, Live-Datenbank gesperrt)"
-      exit 1
-    fi
+if [[ ${#MATCHES} -eq 0 ]]; then
+  if [[ ${READABLE} -eq 0 && ! -r "${CACHE}" ]]; then
     print -u2 "KEIN ZUGRIFF auf die Kontakte (${UNREADABLE} Datenbank(en) gesperrt)"
-    print -u2 "und es existiert kein Cache."
-    print -u2 "Einmalig in einem normalen Terminal ausführen:"
+    print -u2 "und es existiert kein Cache. Einmalig in einem normalen Terminal:"
     print -u2 "  /Users/marlon/Documents/JARVIS/scripts/jarvis-contact.sh --refresh"
     exit 3
   fi
   print "Kein Kontakt gefunden für: ${QUERY}"
   exit 1
 fi
+
+# An exact name match beats a substring one, so "Rici" wins over "Riccardo" —
+# but only when it is the ONLY exact match. Two people really called Rici stay
+# ambiguous, because they are.
+typeset -a EXACT
+EXACT=()
+for ENTRY in "${MATCHES[@]}"; do
+  NAME="${ENTRY%%|*}"
+  [[ "${(L)NAME}" == "${(L)QUERY}" ]] && EXACT+=("${ENTRY}")
+done
+(( ${#EXACT} == 1 )) && MATCHES=("${EXACT[@]}")
+
+# De-duplicate: one person with the same number in two address books is one
+# person, and counting them twice would invent an ambiguity.
+typeset -a UNIQUE
+UNIQUE=()
+for ENTRY in "${MATCHES[@]}"; do
+  SEEN=0
+  for KEPT in "${UNIQUE[@]}"; do
+    [[ "${ENTRY##*|}" == "${KEPT##*|}" ]] && SEEN=1 && break
+  done
+  (( SEEN )) || UNIQUE+=("${ENTRY}")
+done
+MATCHES=("${UNIQUE[@]}")
+
+show() {
+  local ENTRY="$1"
+  printf '%s | %s | %s@s.whatsapp.net\n' "${ENTRY%%|*}" \
+    "$(print -r -- "${ENTRY}" | cut -d'|' -f2)" "${ENTRY##*|}"
+}
+
+# --pick chooses from exactly the list the caller was just shown.
+if [[ -n "${PICK}" ]]; then
+  if (( PICK < 1 || PICK > ${#MATCHES} )); then
+    print -u2 "Es gibt nur ${#MATCHES} Treffer für \"${QUERY}\"."
+    exit 2
+  fi
+  show "${MATCHES[PICK]}"
+  exit 0
+fi
+
+if (( ${#MATCHES} == 1 )); then
+  show "${MATCHES[1]}"
+  exit 0
+fi
+
+print "MEHRDEUTIG: ${#MATCHES} Treffer für \"${QUERY}\" — frag nach, welcher gemeint ist."
+INDEX=1
+for ENTRY in "${MATCHES[@]}"; do
+  printf '%2d) %s\n' "${INDEX}" "$(show "${ENTRY}")"
+  INDEX=$((INDEX + 1))
+done
+print "Auswahl danach mit: jarvis-contact.sh --pick <Nummer> ${QUERY}"
+exit 10

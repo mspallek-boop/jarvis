@@ -523,6 +523,50 @@ def _open_elevenlabs_speech(text: str, config, voice_id: str = ""):
     return opener.open(request, timeout=20)
 
 
+def resolve_piper_voice(requested: str, configured: str) -> str:
+    """A requested Piper model, or the configured one.
+
+    Only files inside the configured model's own directory are accepted. The
+    request carries a filesystem path, so without this a caller could point the
+    synthesiser at any file on the machine.
+    """
+    if not requested:
+        return configured
+    try:
+        root = Path(configured).parent.resolve()
+        candidate = Path(requested).resolve()
+    except (OSError, ValueError):
+        return configured
+    if candidate.parent != root or candidate.suffix != ".onnx" or not candidate.is_file():
+        raise ValueError("Unbekannte Stimme")
+    return str(candidate)
+
+
+def piper_voices(model_path: str) -> list[dict]:
+    """The Piper models sitting next to the configured one.
+
+    Reads the directory rather than a hard-coded list, so downloading another
+    voice is all it takes to offer it — no code change, no redeploy.
+    """
+    try:
+        directory = Path(model_path).parent
+        found = sorted(directory.glob("*.onnx"))
+    except (OSError, ValueError):
+        return []
+    voices = []
+    for path in found:
+        stem = path.stem                       # de_DE-thorsten-high
+        parts = stem.split("-")
+        name = parts[1].replace("_", " ").title() if len(parts) > 1 else stem
+        quality = parts[2] if len(parts) > 2 else ""
+        voices.append({
+            "voice_id": str(path),
+            "name": name if not quality else f"{name} ({quality})",
+            "language": parts[0] if parts else "",
+        })
+    return voices
+
+
 def _ndjson_lines(upstream) -> Iterator[bytes]:
     """Frames from the neural worker, which already speaks NDJSON.
 
@@ -827,8 +871,13 @@ class HermesClient:
             return {"ok": False, "error": self._safe_error(exc)}
 
     def _load_state(self) -> dict[str, str]:
+        # No configured path means no cache, not a crash: session reuse is an
+        # optimisation, and every caller can work without it.
+        path = getattr(self.config, "state_path", None)
+        if path is None:
+            return {}
         try:
-            data = json.loads(self.config.state_path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
@@ -949,6 +998,51 @@ class HermesClient:
         with self._state_lock:
             return self._conversation_locks.setdefault(conversation, threading.Lock())
 
+    def _recent_transcript(self, conversation: str, limit: int = 8, budget: int = 2000) -> str:
+        """The last few turns of a conversation, as plain text.
+
+        A parallel turn runs in its own Hermes session and would otherwise start
+        with no idea what was just discussed — which is exactly the complaint
+        that "he forgets everything as soon as I give him a new task". Copying
+        the recent transcript in is not shared memory, but it is the difference
+        between a colleague who was in the room and one who just walked in.
+        """
+        session_id = self._load_state().get(conversation, "")
+        if not session_id:
+            return ""
+        try:
+            with self._request("GET", f"/api/sessions/{quote(session_id, safe='')}"
+                                      f"/messages?limit={int(limit)}") as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return ""                       # context is a bonus, never a blocker
+        lines: list[str] = []
+        for message in (payload.get("data") or payload.get("messages") or []):
+            role = str(message.get("role") or "")
+            if role not in ("user", "assistant"):
+                continue                    # tool traffic is noise out of context
+            text = " ".join(str(message.get("content") or "").split())
+            if not text:
+                continue
+            lines.append(f"{'Marlon' if role == 'user' else 'Du'}: {text[:400]}")
+        # Newest first while trimming, so the budget buys the most recent turns.
+        kept: list[str] = []
+        used = 0
+        for line in reversed(lines):
+            if used + len(line) > budget:
+                break
+            kept.append(line)
+            used += len(line)
+        return "\n".join(reversed(kept))
+
+    def _with_context(self, text: str, conversation: str) -> str:
+        transcript = self._recent_transcript(conversation)
+        if not transcript:
+            return text
+        return ("[Bisheriges Gespräch, nur zur Erinnerung — nicht darauf antworten "
+                "und es nicht erwähnen:]\n" + transcript +
+                "\n\n[Die neue Aufgabe:]\n" + text)
+
     def _acquire_conversation(self, conversation: str, parallel: bool) -> tuple[threading.Lock, str]:
         """Reserve a conversation to run a turn in, and say which one it got.
 
@@ -1007,13 +1101,19 @@ class HermesClient:
                 with self._active_runs_lock:
                     if self._client_runs.get(client_run_id, {}).get("cancelled"):
                         raise RuntimeError("Abgebrochen, bevor der Turn startete")
+            # Only a lane that is not the main conversation needs the preamble,
+            # and only the first time it is used — afterwards the side session
+            # has a history of its own.
+            outgoing = text
+            if actual != conversation and not self._load_state().get(actual):
+                outgoing = self._with_context(text, conversation)
             try:
-                result = self._chat_once(text, actual, False, client_run_id,
+                result = self._chat_once(outgoing, actual, False, client_run_id,
                                          **({"on_event": on_event} if on_event else {}))
             except urllib.error.HTTPError as exc:
                 if exc.code != HTTPStatus.NOT_FOUND:
                     raise
-                result = self._chat_once(text, actual, True, client_run_id,
+                result = self._chat_once(outgoing, actual, True, client_run_id,
                                          **({"on_event": on_event} if on_event else {}))
             result["conversation"] = actual
             return result
@@ -1342,17 +1442,45 @@ class JarvisHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/voices":
             provider = getattr(self.config, "speech_provider", "local")
-            if provider != "elevenlabs":
-                self._json(HTTPStatus.OK, {"provider": provider, "voices": [], "selected": ""})
-                return
-            try:
-                force = parse_qs(parsed.query).get("refresh", ["0"])[0] == "1"
-                voices = elevenlabs_voices(self.config, force=force)
-            except Exception:  # noqa: BLE001
-                self._json(503, {"error": "Stimmenliste nicht verfügbar."})
-                return
-            self._json(HTTPStatus.OK, {"provider": provider, "voices": voices,
-                                       "selected": self.config.elevenlabs_voice_id})
+            model = getattr(self.config, "piper_model", "")
+            # Grouped, because the two are not peers any more. Piper is local,
+            # free and unlimited; ElevenLabs is a monthly allowance that this
+            # account burns through in days, which is what made JARVIS mute in
+            # the first place. It stays listed for the case where credit exists.
+            groups = [{
+                "id": "piper",
+                "title": "Lokal (Piper)",
+                "note": "Offline, kostenlos, ohne Kontingent. Empfohlen.",
+                "deprecated": False,
+                "voices": piper_voices(model),
+                "selected": model,
+            }]
+            cloud = []
+            error = ""
+            if getattr(self.config, "elevenlabs_key", ""):
+                try:
+                    force = parse_qs(parsed.query).get("refresh", ["0"])[0] == "1"
+                    cloud = elevenlabs_voices(self.config, force=force)
+                except Exception:  # noqa: BLE001
+                    error = "Stimmenliste nicht abrufbar — Konto oder Kontingent prüfen."
+            groups.append({
+                "id": "elevenlabs",
+                "title": "ElevenLabs (Cloud)",
+                "note": "Monatliches Kontingent, hier regelmäßig aufgebraucht. "
+                        "Nur sinnvoll, solange Guthaben da ist.",
+                "deprecated": True,
+                "voices": cloud,
+                "selected": getattr(self.config, "elevenlabs_voice_id", ""),
+                "error": error,
+            })
+            self._json(HTTPStatus.OK, {
+                "provider": provider,
+                "groups": groups,
+                # The old flat shape, so an app that has not been updated yet
+                # keeps working instead of showing an empty list.
+                "voices": cloud,
+                "selected": getattr(self.config, "elevenlabs_voice_id", ""),
+            })
             return
         if parsed.path == "/notifications":
             query = parse_qs(parsed.query)
@@ -1406,13 +1534,30 @@ class JarvisHandler(BaseHTTPRequestHandler):
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 600:
             raise ValueError("Sprachtext muss 1 bis 600 Zeichen enthalten")
         requested_voice = body.get("voice_id") or ""
-        if not isinstance(requested_voice, str) or len(requested_voice) > 80:
+        # A Piper voice is a filesystem path and outgrows an id-sized cap. The
+        # real check is per type below: a strict regex for an ElevenLabs id, a
+        # directory containment check for a model file.
+        if not isinstance(requested_voice, str) or len(requested_voice) > 400:
             raise ValueError("Ungültige Stimme")
         text = text.strip()
+        requested_voice = requested_voice.strip()
+        # A Piper voice is a model path inside the voices directory; an
+        # ElevenLabs one is an id. Which of the two arrived decides the route.
+        piper_voice = ""
+        if requested_voice.endswith(".onnx"):
+            try:
+                piper_voice = resolve_piper_voice(
+                    requested_voice, getattr(self.config, "piper_model", ""))
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            self._speak_locally_or_fail(text, "Lokale Stimme nicht verfügbar", 503,
+                                        piper_voice=piper_voice)
+            return
         provider = getattr(self.config, "speech_provider", "local")
         if provider == "elevenlabs":
             try:
-                voice = resolve_voice_id(requested_voice.strip(), self.config)
+                voice = resolve_voice_id(requested_voice, self.config)
             except ValueError as exc:
                 # A bad voice id is the caller's mistake, not an outage — the
                 # local voice would only paper over a request worth fixing.
@@ -1451,7 +1596,8 @@ class JarvisHandler(BaseHTTPRequestHandler):
         with upstream:
             self._stream_speech_frames(_encoded_frames(_pcm_frames(upstream)), "elevenlabs")
 
-    def _speak_locally_or_fail(self, text: str, message: str, status: int) -> None:
+    def _speak_locally_or_fail(self, text: str, message: str, status: int,
+                               piper_voice: str = "") -> None:
         """Speak locally rather than go silent, best voice first.
 
         "piper" is the local neural voice and the one worth hearing; the macOS
@@ -1470,8 +1616,9 @@ class JarvisHandler(BaseHTTPRequestHandler):
             return
         candidates = []
         if fallback == "piper":
+            model = piper_voice or getattr(self.config, "piper_model", "")
             candidates.append(("piper", lambda: _piper_speech_frames(
-                text, getattr(self.config, "piper_bin", ""), getattr(self.config, "piper_model", ""))))
+                text, getattr(self.config, "piper_bin", ""), model)))
         candidates.append(("macos", lambda: _macos_speech_frames(
             text, getattr(self.config, "macos_voice", ""))))
         for name, build in candidates:

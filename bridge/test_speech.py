@@ -302,3 +302,46 @@ def test_resampling_keeps_its_filter_across_chunks():
     _, state = bridge._resample_to_24k(chunk, 22050, None)
     second, next_state = bridge._resample_to_24k(chunk, 22050, state)
     assert second and next_state != state
+
+
+# ------------------------------------------------- choosing a local voice
+
+def test_a_piper_voice_can_be_requested_by_path(tmp_path, monkeypatch):
+    configured = tmp_path / 'de_DE-thorsten-high.onnx'
+    configured.write_bytes(b'x')
+    other = tmp_path / 'de_DE-kerstin-low.onnx'
+    other.write_bytes(b'x')
+    used = []
+    monkeypatch.setattr(bridge, '_piper_speech_frames',
+                        lambda text, binary, model: used.append(model) or
+                        iter([{'type': 'audio', 'sample_rate': 24000,
+                               'format': 'pcm_s16le', 'data': 'AAA='}, {'type': 'done'}]))
+    status, head, _ = call_full({'text': 'Hallo', 'voice_id': str(other)},
+                                {'piper_model': str(configured), 'speech_fallback': 'piper'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: piper' in head
+    assert used == [str(other)]
+
+
+@pytest.mark.parametrize('escape', ['/etc/passwd.onnx', '../secret.onnx', '/tmp/evil.onnx'])
+def test_a_voice_outside_the_voices_directory_is_refused(tmp_path, escape):
+    """The request carries a filesystem path; without the check it points anywhere."""
+    configured = tmp_path / 'de_DE-thorsten-high.onnx'
+    configured.write_bytes(b'x')
+    status, _, content = call_full({'text': 'Hallo', 'voice_id': escape},
+                                   {'piper_model': str(configured), 'speech_fallback': 'piper'})
+    assert status == 400
+    assert b'Unbekannte Stimme' in content
+
+
+def test_the_voice_list_groups_local_and_cloud(tmp_path, monkeypatch):
+    (tmp_path / 'de_DE-thorsten-high.onnx').write_bytes(b'x')
+    (tmp_path / 'de_DE-kerstin-low.onnx').write_bytes(b'x')
+    groups = {g['id']: g for g in [
+        {'id': 'piper', 'voices': bridge.piper_voices(str(tmp_path / 'de_DE-thorsten-high.onnx'))}]}
+    names = sorted(v['name'] for v in groups['piper']['voices'])
+    assert names == ['Kerstin (low)', 'Thorsten (high)']
+
+
+def test_piper_voices_survives_a_missing_directory():
+    assert bridge.piper_voices('/nope/does-not-exist/model.onnx') == []
