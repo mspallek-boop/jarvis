@@ -9,6 +9,21 @@ import SwiftUI
 /// The APIs that would remove it (`.windowStyle(.plain)`, `.containerBackground`)
 /// need a newer macOS than this app targets. An `NSPanel` has no such opinion:
 /// borderless, transparent, and the view draws the only shape there is.
+/// A borderless panel that can still be clicked.
+///
+/// `canBecomeKey` is false by default for a borderless window, and a window that
+/// cannot become key is never sent mouse events — which is why clicking the pill
+/// did nothing at all, whatever the click detection was doing. Verified rather
+/// than assumed: the same style mask reports false without this override and
+/// true with it.
+///
+/// `.nonactivatingPanel` still keeps the app in the background, so becoming key
+/// does not pull the user out of whatever they were working in.
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 /// A panel that tells a click apart from a drag.
 ///
 /// The detection sits on a local event monitor rather than on `mouseDown` /
@@ -45,7 +60,7 @@ final class OverlayPanelController {
     }
 
     private func make(model: AppModel) -> NSPanel {
-        let panel = NSPanel(
+        let panel = KeyablePanel(
             contentRect: NSRect(origin: .zero, size: Self.size),
             // .nonactivatingPanel keeps the app in the background when the
             // panel is clicked, which is what lets it be used mid-hide.
