@@ -84,6 +84,36 @@ struct SettingsView: View {
                         let client = try? model.makeClient()
                         model.speech.speak("Guten Abend, sir. JARVIS ist bereit. Womit darf ich helfen?", neuralClient: client)
                     }
+                    #if os(macOS)
+                    Divider()
+                    Toggle("Tastenkürzel zum Sprechen", isOn: Binding(
+                        get: { model.hotkey.enabled },
+                        set: { model.hotkey.enabled = $0 }
+                    ))
+                    Picker("Taste", selection: Binding(
+                        get: { model.hotkey.key },
+                        set: { model.hotkey.key = $0 }
+                    )) {
+                        ForEach(HotkeyMonitor.Key.allCases) { key in
+                            Text(key.label).tag(key)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!model.hotkey.enabled)
+                    Text("Halten und sprechen, loslassen sendet. Zweimal kurz tippen lässt das Mikrofon offen, bis du wieder doppelt tippst. Modifier-Tasten tippen nichts, sind also auch in einem Textfeld gefahrlos zu halten.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if model.hotkey.enabled && !model.hotkey.permissionGranted {
+                        // A global monitor silently receives nothing without
+                        // this, so the feature would look broken rather than
+                        // unpermitted.
+                        Text("macOS lässt Tasten anderer Apps nur mit Bedienungshilfen-Freigabe mitlesen. Ohne sie wirkt das Kürzel nur, während JARVIS vorne ist.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Bedienungshilfen freigeben…") { model.hotkey.requestPermission() }
+                    }
+                    Divider()
+                    #endif
                     Toggle("Durch Sprechen unterbrechen", isOn: Binding(
                         get: { model.speech.interruptsBySpeaking },
                         set: { model.speech.interruptsBySpeaking = $0 }

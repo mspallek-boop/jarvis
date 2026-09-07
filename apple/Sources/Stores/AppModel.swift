@@ -258,6 +258,11 @@ final class AppModel: ObservableObject {
     /// the provider API key never reaches the app.
     @Published private(set) var availableBridgeVoices: [JarvisAPIClient.BridgeVoice] = []
     @Published private(set) var voiceGroups: [JarvisAPIClient.VoiceGroup] = []
+    #if os(macOS)
+    /// Push-to-talk from anywhere: hold to talk, double-tap for hands-free.
+    let hotkey = HotkeyMonitor()
+    private var hotkeyObserver: AnyCancellable?
+    #endif
     @Published private(set) var voiceListError: String?
     @Published var selectedBridgeVoice: String = "" {
         didSet { UserDefaults.standard.set(selectedBridgeVoice, forKey: "selectedBridgeVoice") }
@@ -407,6 +412,39 @@ final class AppModel: ObservableObject {
         speech.onSpeechFinished = { [weak self] in
             Task { await self?.resumeVoice() }
         }
+        #if os(macOS)
+        // Holding the key opens the microphone even when the app is not in
+        // front, which is the point — dictating into another app.
+        hotkey.onPressAndHold = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.speech.setMicrophoneMuted(false)
+                await self.speech.start()
+            }
+        }
+        // Letting go ends the sentence and sends it, rather than waiting for
+        // the silence timer: the release *is* the end of the sentence.
+        hotkey.onRelease = { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.hotkey.handsFree else { return }
+                if let text = self.speech.stop() { await self.send(text) }
+            }
+        }
+        hotkey.onHandsFreeChanged = { [weak self] on in
+            Task { @MainActor in
+                guard let self else { return }
+                if on {
+                    self.speech.setMicrophoneMuted(false)
+                    await self.speech.start()
+                } else if let text = self.speech.stop() {
+                    await self.send(text)
+                }
+            }
+        }
+        hotkeyObserver = hotkey.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        #endif
         speechObserver = speech.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }

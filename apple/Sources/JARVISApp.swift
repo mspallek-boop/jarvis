@@ -20,13 +20,12 @@ struct JARVISApp: App {
         // Same JARVIS, small and above everything, for keeping a conversation
         // going while working in another app. One model, so what is said in one
         // window is there in the other.
-        Window("JARVIS Overlay", id: "jarvis-overlay") {
+        Window("JARVIS", id: "jarvis-overlay") {
             OverlayView()
                 .environmentObject(model)
-                .preferredColorScheme(model.theme.colorScheme)
-                .background(FloatingWindowConfigurator())
+                .background(OverlayWindowConfigurator())
         }
-        .defaultSize(width: 200, height: 180)
+        .defaultSize(width: 210, height: 40)
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .keyboardShortcut("j", modifiers: [.command, .shift])

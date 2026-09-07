@@ -17,6 +17,7 @@
 		1D787D48377569251F718F58 /* JARVISApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D05682135E2985D3FA0889 /* JARVISApp.swift */; };
 		2D816FEBF00C3EE0A29A9F5B /* JarvisAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4B478F7CCE24096F5CC9D2 /* JarvisAPIClient.swift */; };
 		2DD35E66EFA13352EB4F13C2 /* BargeInDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2D87C90A40B984B28E298A /* BargeInDetector.swift */; };
+		2EE033FCAC1A439AF0FD87D4 /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */; };
 		3B2293F36F8F0361D6C6DBAE /* WatchConnectivityClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4184D57F559C022E1A0B6242 /* WatchConnectivityClient.swift */; };
 		3C8F52253A3C8F3FBCB966CB /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB8DF3265501664E1219679C /* AppModel.swift */; };
 		434C35C0B167AD43E73D4C05 /* AnswerText.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACD27D506C4574D9AF997B9 /* AnswerText.swift */; };
@@ -56,6 +57,7 @@
 		E573F2C669C566BFBD58C101 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55E64DE1A6B6D0A39EF53CA /* MessageBubble.swift */; };
 		E5E08D1995B23AEF6F4232CC /* SpeechPlaybackSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5B354C95444494ABFDFB10 /* SpeechPlaybackSpeed.swift */; };
 		E7147F3B95EDA4FBF14AE022 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8CFEA8899317EA95524D37CD /* Assets.xcassets */; };
+		E7991059FF5BD9384A52DC41 /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */; };
 		ED66C5220A55C7AA879E0204 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF0DEE643BA0F757FA42DF3 /* ChatMessage.swift */; };
 		F68B8DF458E92CB320511162 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0149145E6855F93FB72D9A6 /* ContentView.swift */; };
 		F981E8B40EC2E6CAAC981D35 /* AnswerText.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACD27D506C4574D9AF997B9 /* AnswerText.swift */; };
@@ -114,6 +116,7 @@
 		3972C8A3F4FBCA11D5048C90 /* WatchSentenceQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSentenceQueue.swift; sourceTree = "<group>"; };
 		3C61A26469A6D7CB69AE55CC /* JARVIS-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "JARVIS-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		4184D57F559C022E1A0B6242 /* WatchConnectivityClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchConnectivityClient.swift; sourceTree = "<group>"; };
+		4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyMonitor.swift; sourceTree = "<group>"; };
 		5A73486912EC61CA5F0C62FC /* OrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbView.swift; sourceTree = "<group>"; };
 		5D123734AAB0C4E22872BA3C /* FilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesView.swift; sourceTree = "<group>"; };
 		733D9043B84F4189261B1AA8 /* JARVIS-iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "JARVIS-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -239,6 +242,7 @@
 			children = (
 				FACD27D506C4574D9AF997B9 /* AnswerText.swift */,
 				1E2D87C90A40B984B28E298A /* BargeInDetector.swift */,
+				4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */,
 				FA4B478F7CCE24096F5CC9D2 /* JarvisAPIClient.swift */,
 				E78AFC01342E09D6260979F6 /* KeychainStore.swift */,
 				F6B72D9D3A012E4BB87C579C /* NeuralSpeechPlayer.swift */,
@@ -435,6 +439,7 @@
 				07D76716609204D812F70B0F /* ChatMessage.swift in Sources */,
 				D1C06FF446D41CF8C87A7B2D /* ContentView.swift in Sources */,
 				7A1D0804C9AC2E68FAAC62C4 /* FilesView.swift in Sources */,
+				2EE033FCAC1A439AF0FD87D4 /* HotkeyMonitor.swift in Sources */,
 				5E2C18E5CE0C884733155E53 /* JARVISApp.swift in Sources */,
 				72BAFBC7DC8F4372F5C20F7B /* JarvisAPIClient.swift in Sources */,
 				AE3BD61E108CEEAA81C0075C /* KeychainStore.swift in Sources */,
@@ -462,6 +467,7 @@
 				ED66C5220A55C7AA879E0204 /* ChatMessage.swift in Sources */,
 				F68B8DF458E92CB320511162 /* ContentView.swift in Sources */,
 				8B392D515A810B65F04DB2E0 /* FilesView.swift in Sources */,
+				E7991059FF5BD9384A52DC41 /* HotkeyMonitor.swift in Sources */,
 				1D787D48377569251F718F58 /* JARVISApp.swift in Sources */,
 				2D816FEBF00C3EE0A29A9F5B /* JarvisAPIClient.swift in Sources */,
 				9E484C664AD21E821AAE038E /* KeychainStore.swift in Sources */,
