@@ -152,20 +152,14 @@ struct ContentView: View {
         // is out of the way but still listening, which is the whole point of a
         // push-to-talk pill. Bringing the app back takes it away again, so the
         // two are never on screen at once.
+        // ⌘H is replaced by the collapse (see JARVISApp commands); these cover
+        // the paths that still hide or minimise the window some other way.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
-            model.overlayVisible = true
+            model.collapseToOverlay()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didUnhideNotification)) { _ in
-            model.overlayVisible = false
-        }
-        // Minimising counts too: the window is off the screen either way, and
-        // that is the moment the small panel takes over.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { note in
-            guard (note.object as? NSWindow)?.title != "JARVIS" else { return }
-            model.overlayVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { _ in
-            model.overlayVisible = false
+            guard !(note.object is NSPanel) else { return }
+            model.collapseToOverlay()
         }
         #endif
     }

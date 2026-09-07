@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03A02E4F4F1105974E8C6D51 /* WindowTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C493622F33AFDD8211D93B /* WindowTransition.swift */; };
 		040AB5BC5CB920F10FA1E996 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE62E25BBD9B0943F8A64784 /* SpeechController.swift */; };
 		06CFBD9DD5C96B18FE88CB17 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8206E546BD2F8F0E8797941F /* SettingsView.swift */; };
 		0790C7CD0AF427A049AC3AA5 /* WatchSentenceQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3972C8A3F4FBCA11D5048C90 /* WatchSentenceQueue.swift */; };
@@ -49,6 +50,7 @@
 		AC5D657B9593B9271949615C /* OverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964CBE0FECBFFAD0ACA4A829 /* OverlayView.swift */; };
 		AE3BD61E108CEEAA81C0075C /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E78AFC01342E09D6260979F6 /* KeychainStore.swift */; };
 		B7AEE0BDBEC0FD92935AF537 /* SpeechSentenceBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0564777068B4669CA9ABD265 /* SpeechSentenceBuffer.swift */; };
+		B8FA3099DBC58157F957D1DD /* WindowTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C493622F33AFDD8211D93B /* WindowTransition.swift */; };
 		C2395688309B36A323CE349D /* JARVISComplication.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDF587F5D8E266248A965D5C /* JARVISComplication.swift */; };
 		C38F5A8E319460D3054C2068 /* BargeInDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2D87C90A40B984B28E298A /* BargeInDetector.swift */; };
 		C6318C4316D49FF3E9D41D58 /* JARVIS-Watch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A34562E24B9A74B4ECC1D169 /* JARVIS-Watch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -116,6 +118,7 @@
 		134C14076E8AB28BC8CF0FF9 /* PlatformImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformImage.swift; sourceTree = "<group>"; };
 		1914BCE6BAADFBF806B0F8AE /* JARVIS-WatchComplication.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "JARVIS-WatchComplication.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1E2D87C90A40B984B28E298A /* BargeInDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BargeInDetector.swift; sourceTree = "<group>"; };
+		35C493622F33AFDD8211D93B /* WindowTransition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowTransition.swift; sourceTree = "<group>"; };
 		3972C8A3F4FBCA11D5048C90 /* WatchSentenceQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSentenceQueue.swift; sourceTree = "<group>"; };
 		3C61A26469A6D7CB69AE55CC /* JARVIS-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "JARVIS-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		4184D57F559C022E1A0B6242 /* WatchConnectivityClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchConnectivityClient.swift; sourceTree = "<group>"; };
@@ -256,6 +259,7 @@
 				0564777068B4669CA9ABD265 /* SpeechSentenceBuffer.swift */,
 				070AC2894379A270DCF07D2F /* SpeechText.swift */,
 				06F2A17C7E7C119F8C6A7AD0 /* WatchConnectivityController.swift */,
+				35C493622F33AFDD8211D93B /* WindowTransition.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -459,6 +463,7 @@
 				78CB1391056C2011475FE8C3 /* SpeechSentenceBuffer.swift in Sources */,
 				73F97758AB6743015246E330 /* SpeechText.swift in Sources */,
 				9EEC9014E356974981495B4B /* WatchConnectivityController.swift in Sources */,
+				03A02E4F4F1105974E8C6D51 /* WindowTransition.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -488,6 +493,7 @@
 				B7AEE0BDBEC0FD92935AF537 /* SpeechSentenceBuffer.swift in Sources */,
 				9B7A2258AD7AAE9C1026F84F /* SpeechText.swift in Sources */,
 				435492745CC215DE90387A3D /* WatchConnectivityController.swift in Sources */,
+				B8FA3099DBC58157F957D1DD /* WindowTransition.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

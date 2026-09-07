@@ -262,17 +262,35 @@ final class AppModel: ObservableObject {
     /// Push-to-talk from anywhere: hold to talk, double-tap for hands-free.
     let hotkey = HotkeyMonitor()
     /// The small panel is shown while the main window is out of the way.
-    @Published var overlayVisible = false {
-        didSet {
-            guard overlayVisible != oldValue else { return }
-            overlayVisible ? overlayPanel.show(model: self) : overlayPanel.hide()
-            // Push-to-talk belongs to the small mode only. With the window in
-            // front, JARVIS listens the way he always did, and a global key
-            // grab would fight the app's own microphone handling.
-            hotkey.active = overlayVisible
-        }
-    }
+    @Published private(set) var overlayVisible = false
     private let overlayPanel = OverlayPanelController()
+
+    /// Fold the window into the pill. The pill has to exist first, because the
+    /// window animates into *its* rectangle — that shared rectangle is what
+    /// makes the two read as one thing.
+    func collapseToOverlay() {
+        guard !overlayVisible else { return }
+        overlayPanel.show(model: self)
+        overlayPanel.onClick = { [weak self] in self?.expandFromOverlay() }
+        overlayVisible = true
+        // Push-to-talk belongs to the small mode only. With the window in front
+        // JARVIS listens the way he always did, and a global key grab would
+        // fight the app's own microphone handling.
+        hotkey.active = true
+        WindowTransition.collapse(into: overlayPanel.frame) {}
+    }
+
+    /// Spring the window back out of the pill, centred.
+    func expandFromOverlay() {
+        guard overlayVisible else { return }
+        overlayVisible = false
+        hotkey.active = false
+        let source = overlayPanel.frame
+        overlayPanel.hide()
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        WindowTransition.expand(from: source)
+    }
     private var hotkeyObserver: AnyCancellable?
     #endif
     @Published private(set) var voiceListError: String?
