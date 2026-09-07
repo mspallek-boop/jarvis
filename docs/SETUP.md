@@ -243,3 +243,30 @@ Die Bridge nutzt ihn automatisch und fällt auf die CLI zurück, wenn er steht.
 **Wichtig für alle JARVIS-Dienste: `ProcessType` muss `Interactive` sein.**
 Mit `Background` drosselt macOS die CPU des Jobs, und Kindprozesse erben das —
 derselbe Satz brauchte 1,2 s im Terminal und 9,2 s über die gedrosselte Bridge.
+
+### Bessere Stimme: OpenAI TTS mit Persona
+
+Lokale deutsche TTS hat eine Qualitätsdecke, und Piper ist sie. Wer darüber
+hinaus will, braucht ein Cloud-Modell — aber eines, das nach Verbrauch
+abrechnet statt nach einem Monatskontingent, das leer läuft.
+
+```bash
+# in ~/.hermes/.env
+OPENAI_API_KEY=sk-...
+JARVIS_TTS_OPENAI_VOICE=ash          # ash, onyx, ballad, sage, verse, …
+```
+
+Danach erscheint „OpenAI (Cloud)" ganz oben in der Stimmenauswahl der App.
+
+Der eigentliche Grund für diesen Anbieter ist nicht die Klangqualität allein,
+sondern dass sich die **Persona vorgeben** lässt:
+
+```bash
+JARVIS_TTS_OPENAI_INSTRUCTIONS="Sprich wie ein britischer Butler: ruhig, trocken, unaufgeregt, mit leiser Ironie. Tiefe, warme Stimme, gemessenes Tempo, kein Enthusiasmus."
+```
+
+Das ist der Unterschied zu jeder lokalen Stimme: die klingt, wie sie klingt.
+
+Angefordert wird `response_format: pcm`, also 24 kHz 16-bit mono — byteweise das
+Format, das die App ohnehin abspielt, deshalb wird nichts umgerechnet. Fällt die
+Cloud aus, übernimmt sofort die lokale Stimme; stumm wird JARVIS nie.

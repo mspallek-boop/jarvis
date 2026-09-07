@@ -393,3 +393,69 @@ def test_premium_voices_are_listed_first(monkeypatch):
     assert voices[0]['description'] == 'Premium'
     assert all(v['accent'] == 'german' for v in voices)         # en_US excluded
     assert all(v['id'].startswith('macos:') for v in voices)
+
+
+# ------------------------------------------------------- steerable cloud voice
+
+def test_an_openai_voice_streams_without_resampling(monkeypatch):
+    """OpenAI's `pcm` is 24 kHz 16-bit mono — already the app's format."""
+    sent = {}
+
+    class Upstream:
+        def __init__(self):
+            self._chunks = [b'\x01\x02' * 512, b'']
+        def read1(self, n):
+            return self._chunks.pop(0) if self._chunks else b''
+        # `getattr(upstream, "read1", upstream.read)` evaluates the default
+        # eagerly, so the fake needs both — a real HTTPResponse has both.
+        read = read1
+        def close(self):
+            pass
+
+    def fake_open(request, timeout=0):
+        sent['url'] = request.full_url
+        sent['body'] = json.loads(request.data)
+        sent['auth'] = request.headers.get('Authorization')
+        return Upstream()
+
+    monkeypatch.setattr(bridge.urllib.request, 'build_opener',
+                        lambda *a: SimpleNamespace(open=fake_open))
+    status, head, content = call_full({'text': 'Hallo', 'voice_id': 'openai:onyx'},
+                                      {'openai_key': 'sk-test', 'openai_voice': 'ash',
+                                       'openai_model': 'gpt-4o-mini-tts',
+                                       'openai_instructions': 'Ruhiger Butler.'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: openai' in head
+    assert sent['url'] == bridge.OPENAI_SPEECH_URL
+    assert sent['body']['voice'] == 'onyx'
+    assert sent['body']['response_format'] == 'pcm'
+    assert sent['body']['instructions'] == 'Ruhiger Butler.'
+    frames = [json.loads(l) for l in content.splitlines() if l]
+    assert frames[-1] == {'type': 'done'}
+    assert all(f['sample_rate'] == 24000 for f in frames if f['type'] == 'audio')
+
+
+def test_an_unknown_openai_voice_is_refused():
+    status, _, content = call_full({'text': 'Hallo', 'voice_id': 'openai:erfunden'},
+                                   {'openai_key': 'sk-test'})
+    assert status == 400
+    assert b'Unbekannte Stimme' in content
+
+
+def test_a_cloud_outage_falls_back_to_the_local_voice(monkeypatch):
+    """A provider being down must cost the timbre, never the answer."""
+    monkeypatch.setattr(bridge, '_openai_speech_frames',
+                        lambda *a, **k: (_ for _ in ()).throw(OSError('down')))
+    monkeypatch.setattr(bridge, '_piper_speech_frames',
+                        lambda *a, **k: iter([{'type': 'audio', 'sample_rate': 24000,
+                                               'format': 'pcm_s16le', 'data': 'AAA='},
+                                              {'type': 'done'}]))
+    status, head, _ = call_full({'text': 'Hallo', 'voice_id': 'openai:ash'},
+                                {'openai_key': 'sk-test', 'speech_fallback': 'piper'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: piper' in head
+
+
+def test_cloud_voices_are_hidden_without_a_key():
+    assert bridge.openai_voices('') == []
+    assert len(bridge.openai_voices('sk-test')) == len(bridge.OPENAI_VOICES)

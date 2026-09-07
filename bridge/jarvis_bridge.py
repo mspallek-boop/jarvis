@@ -129,6 +129,10 @@ class BridgeConfig:
     macos_voice: str = ""
     piper_bin: str = ""
     piper_model: str = ""
+    openai_key: str = field(default="", repr=False)
+    openai_voice: str = "ash"
+    openai_model: str = "gpt-4o-mini-tts"
+    openai_instructions: str = ""
     elevenlabs_key: str = field(default="", repr=False)
     elevenlabs_voice_id: str = ""
     elevenlabs_model: str = "eleven_multilingual_v2"
@@ -170,6 +174,11 @@ class BridgeConfig:
             macos_voice=os.environ.get("JARVIS_TTS_MACOS_VOICE", "").strip(),
             piper_bin=os.environ.get("JARVIS_PIPER_BIN", str(Path.home() / ".hermes/piper-venv/bin/piper")).strip(),
             piper_model=os.environ.get("JARVIS_PIPER_MODEL", str(Path.home() / ".hermes/piper-voices/de_DE-thorsten-high.onnx")).strip(),
+            openai_key=os.environ.get("OPENAI_API_KEY", "").strip(),
+            openai_voice=os.environ.get("JARVIS_TTS_OPENAI_VOICE", "ash").strip(),
+            openai_model=os.environ.get("JARVIS_TTS_OPENAI_MODEL", "gpt-4o-mini-tts").strip(),
+            openai_instructions=os.environ.get("JARVIS_TTS_OPENAI_INSTRUCTIONS",
+                                               DEFAULT_OPENAI_INSTRUCTIONS).strip(),
             elevenlabs_key=os.environ.get("ELEVENLABS_API_KEY", "").strip(),
             elevenlabs_voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "").strip(),
             elevenlabs_model=os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2").strip(),
@@ -540,6 +549,70 @@ def resolve_piper_voice(requested: str, configured: str) -> str:
     if candidate.parent != root or candidate.suffix != ".onnx" or not candidate.is_file():
         raise ValueError("Unbekannte Stimme")
     return str(candidate)
+
+
+OPENAI_VOICE_PREFIX = "openai:"
+OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
+# Steerable by instruction, which is the reason this provider exists: the
+# complaint was never intelligibility, it was that no local voice sounds like a
+# butler. Here the persona is a parameter.
+OPENAI_VOICES = ("ash", "onyx", "ballad", "sage", "verse", "alloy", "echo",
+                 "fable", "nova", "shimmer", "coral")
+DEFAULT_OPENAI_INSTRUCTIONS = (
+    "Sprich wie ein britischer Butler: ruhig, trocken, unaufgeregt, mit leiser "
+    "Ironie. Tiefe, warme Stimme, gemessenes Tempo, kein Enthusiasmus, keine "
+    "hochgezogene Betonung am Satzende. Deutsch, ohne Akzent."
+)
+
+
+def openai_voices(key: str) -> list[dict]:
+    """The fixed voice set. There is no list endpoint, and it changes rarely."""
+    if not key:
+        return []
+    return [{"id": OPENAI_VOICE_PREFIX + name, "name": name.capitalize(),
+             "accent": "german", "gender": "", "description": "steuerbar"}
+            for name in OPENAI_VOICES]
+
+
+def _openai_speech_frames(text: str, key: str, voice: str, model: str,
+                          instructions: str) -> Iterator[dict]:
+    """Cloud speech that can be told who it is.
+
+    Asks for `pcm`, which OpenAI returns as 24 kHz 16-bit mono little-endian —
+    byte for byte the format the app already plays, so nothing is resampled and
+    nothing downstream changes.
+    """
+    if not key:
+        raise RuntimeError("OpenAI key missing")
+    payload = {"model": model or "gpt-4o-mini-tts", "voice": voice or "ash",
+               "input": text, "response_format": "pcm"}
+    if instructions:
+        payload["instructions"] = instructions
+    request = urllib.request.Request(
+        OPENAI_SPEECH_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    # Fixed TLS origin: neither environment proxies nor redirects may see the key.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoSpeechRedirect())
+    upstream = opener.open(request, timeout=30)
+    total = 0
+    read = getattr(upstream, "read1", upstream.read)
+    try:
+        while True:
+            chunk = read(8192)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 24_000 * 2 * 120:
+                raise RuntimeError("Audio limit")
+            if len(chunk) % 2:                     # never split a sample
+                chunk += read(1) or b"\x00"
+            yield {"type": "audio", "sample_rate": 24000, "format": "pcm_s16le",
+                   "data": base64.b64encode(chunk).decode("ascii")}
+    finally:
+        upstream.close()
+    if not total:
+        raise RuntimeError("OpenAI produced no audio")
+    yield {"type": "done"}
 
 
 MACOS_VOICE_PREFIX = "macos:"
@@ -1549,14 +1622,27 @@ class JarvisHandler(BaseHTTPRequestHandler):
             # free and unlimited; ElevenLabs is a monthly allowance that this
             # account burns through in days, which is what made JARVIS mute in
             # the first place. It stays listed for the case where credit exists.
-            groups = [{
+            groups = []
+            cloud_voices = openai_voices(getattr(self.config, "openai_key", ""))
+            if cloud_voices:
+                groups.append({
+                    "id": "openai",
+                    "title": "OpenAI (Cloud)",
+                    "note": "Die Persona ist einstellbar (JARVIS_TTS_OPENAI_INSTRUCTIONS) — "
+                            "aktuell auf ruhigen, trockenen Butler. Abgerechnet pro Zeichen, "
+                            "kein monatliches Kontingent, das leer läuft.",
+                    "deprecated": False,
+                    "voices": cloud_voices,
+                    "selected": OPENAI_VOICE_PREFIX + getattr(self.config, "openai_voice", "ash"),
+                })
+            groups.append({
                 "id": "piper",
                 "title": "Lokal (Piper)",
                 "note": "Offline, kostenlos, ohne Kontingent. Empfohlen.",
                 "deprecated": False,
                 "voices": piper_voices(model),
                 "selected": model,
-            }]
+            })
             system = macos_voices()
             if system:
                 groups.append({
@@ -1658,6 +1744,25 @@ class JarvisHandler(BaseHTTPRequestHandler):
         # A Piper voice is a model path inside the voices directory; an
         # ElevenLabs one is an id. Which of the two arrived decides the route.
         piper_voice = ""
+        if requested_voice.startswith(OPENAI_VOICE_PREFIX):
+            name = requested_voice[len(OPENAI_VOICE_PREFIX):].strip()
+            if name not in OPENAI_VOICES:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Unbekannte Stimme"})
+                return
+            try:
+                frames = _openai_speech_frames(
+                    text, getattr(self.config, "openai_key", ""), name,
+                    getattr(self.config, "openai_model", ""),
+                    getattr(self.config, "openai_instructions", ""))
+                first = next(iter(frames))
+            except Exception:
+                # The cloud failing must not mean silence: fall through to the
+                # local voice, which is always there.
+                self._speak_locally_or_fail(text, "OpenAI-Stimme nicht verfügbar", 503)
+                return
+            self._stream_speech_frames(
+                _encoded_frames(itertools.chain([first], frames)), "openai")
+            return
         if requested_voice.startswith(MACOS_VOICE_PREFIX):
             try:
                 name = resolve_macos_voice(requested_voice)
