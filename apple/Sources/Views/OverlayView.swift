@@ -2,130 +2,99 @@
 import AppKit
 import SwiftUI
 
-/// JARVIS as a pill above the Dock: idle it is a dash you stop noticing,
-/// listening it is a waveform.
+/// JARVIS shrunk to a floating panel, the way a video call keeps a small window
+/// when you leave it.
 ///
-/// Sized and placed to be ignorable. The whole value of a push-to-talk overlay
-/// is that it never asks for attention between uses, so idle it shows one small
-/// mark and nothing else — no label, no button, no chrome.
+/// The panel *is* the window: one rounded rectangle, content to the edges, no
+/// container inside a container. Everything here is either the grid or one line
+/// about what is happening — anything else belongs in the main window.
 struct OverlayView: View {
     @EnvironmentObject private var model: AppModel
 
     private var ink: Color { .white }
 
-    private var isActive: Bool {
-        model.speech.isListening || model.hotkey.isHeld || model.hotkey.handsFree
+    private var listening: Bool { model.speech.isListening || model.hotkey.isHeld }
+
+    private var status: String {
+        if model.speech.microphoneMuted { return "stumm" }
+        if model.hotkey.handsFree { return "freihändig" }
+        if listening { return "hört zu" }
+        if model.isWorking { return model.activityLabel }
+        if model.speech.isSpeaking { return "spricht" }
+        return model.hotkey.enabled ? model.hotkey.key.shortLabel : "bereit"
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // The same grid and the same animation as the orb, three across
-            // instead of five: at this size five tiles are mush, and a
-            // different shape would read as a different app.
-            OrbView(active: true,
-                    listening: model.speech.isListening || model.hotkey.isHeld,
-                    thinking: model.isWorking,
-                    size: 22, color: ink, columns: 3)
-            if isActive {
-                Waveform(active: model.speech.isListening || model.hotkey.isHeld, ink: ink)
-                    .frame(width: 74, height: 15)
-            } else if model.isWorking {
-                Waveform(active: true, ink: ink.opacity(0.6))
-                    .frame(width: 74, height: 15)
-            } else {
-                Capsule()
-                    .fill(ink.opacity(0.32))
-                    .frame(width: 42, height: 3)
+        HStack(spacing: 12) {
+            // Always animating, just slower when idle. A still grid reads as a
+            // dead screenshot, which is what made the first version look broken.
+            OrbView(active: true, listening: listening,
+                    thinking: model.isWorking || !listening,
+                    size: 34, color: ink, columns: 3)
+                .opacity(listening || model.isWorking ? 1 : 0.6)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(status)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.9))
+                    .lineLimit(1)
+                if model.localRuns.count > 1 {
+                    Text("\(model.localRuns.count) Aufgaben")
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.45))
+                }
             }
-            if model.hotkey.handsFree {
-                // The one thing worth a word: hands-free stays on after you let
-                // go, and forgetting that means an open microphone.
-                Text("frei")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundStyle(ink.opacity(0.75))
-            }
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 13)
-        .frame(height: 36)
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(
-            Capsule().fill(Color.black.opacity(0.82))
-                .overlay(Capsule().strokeBorder(ink.opacity(isActive ? 0.22 : 0.10), lineWidth: 1))
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(Color.black.opacity(0.88))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .strokeBorder(ink.opacity(listening ? 0.28 : 0.12), lineWidth: 1)
+                )
         )
-        .animation(.easeInOut(duration: 0.18), value: isActive)
-        .animation(.easeInOut(duration: 0.18), value: model.hotkey.handsFree)
+        .animation(.easeInOut(duration: 0.22), value: listening)
+        .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         .onTapGesture { Task { await model.toggleListening() } }
         .help(model.hotkey.enabled
               ? "\(model.hotkey.key.label) halten zum Sprechen · doppelt tippen für freihändig"
-              : "Tastenkürzel ist aus")
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+              : "Klicken zum Sprechen")
     }
 }
 
-/// Bars that rise and fall while listening, and lie flat when not.
-private struct Waveform: View {
-    let active: Bool
-    let ink: Color
-    @State private var phase: CGFloat = 0
-
-    private let heights: [CGFloat] = [0.35, 0.7, 1.0, 0.55, 0.85, 0.4, 0.95, 0.6, 0.3]
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(heights.indices, id: \.self) { index in
-                Capsule()
-                    .fill(ink.opacity(0.85))
-                    .frame(width: 3,
-                           height: active ? bar(index) : 3)
-            }
-        }
-        .frame(maxHeight: .infinity)
-        .onAppear {
-            guard active else { return }
-            withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { phase = 1 }
-        }
-        .onChange(of: active) { _, running in
-            phase = 0
-            guard running else { return }
-            withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { phase = 1 }
-        }
-    }
-
-    private func bar(_ index: Int) -> CGFloat {
-        let base = heights[index]
-        // Alternating bars breathe out of step, which reads as sound rather
-        // than as a progress bar.
-        let swing = index.isMultiple(of: 2) ? phase : 1 - phase
-        return 4 + 11 * base * (0.45 + 0.55 * swing)
-    }
-}
-
-/// Puts the panel where a push-to-talk indicator belongs: bottom centre, just
-/// above the Dock, above other apps' windows, on every Space, and never
-/// stealing focus — taking focus would defeat dictating into another app.
+/// Makes the window disappear as a window: no title bar, no frame, no opaque
+/// background — only the rounded panel the view draws. Floats above other apps,
+/// on every Space, and never takes focus, because taking focus would defeat
+/// talking to JARVIS while working in something else.
 struct OverlayWindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
+            window.styleMask.insert(.fullSizeContentView)
+            window.styleMask.remove(.resizable)
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            // The panel draws its own rounded shape; a window background would
+            // sit behind it as a second, squarer container.
+            window.hasShadow = true
+            window.isMovableByWindowBackground = true
             window.level = .floating
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-            window.isMovableByWindowBackground = true
-            window.backgroundColor = .clear
-            window.isOpaque = false
-            window.hasShadow = true
-            window.styleMask.remove(.resizable)
-            window.standardWindowButton(.closeButton)?.isHidden = true
-            window.standardWindowButton(.zoomButton)?.isHidden = true
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            // Only place it the first time; afterwards the user's own position
-            // is the right one.
+            for button in [NSWindow.ButtonType.closeButton, .zoomButton, .miniaturizeButton] {
+                window.standardWindowButton(button)?.isHidden = true
+            }
             if !UserDefaults.standard.bool(forKey: "overlayPlaced"),
                let screen = window.screen ?? NSScreen.main {
                 let visible = screen.visibleFrame
                 let size = window.frame.size
-                window.setFrameOrigin(CGPoint(
-                    x: visible.midX - size.width / 2,
-                    y: visible.minY + 12))
+                window.setFrameOrigin(CGPoint(x: visible.maxX - size.width - 24,
+                                              y: visible.maxY - size.height - 24))
                 UserDefaults.standard.set(true, forKey: "overlayPlaced")
             }
         }

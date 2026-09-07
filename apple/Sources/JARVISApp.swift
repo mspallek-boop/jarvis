@@ -25,7 +25,7 @@ struct JARVISApp: App {
                 .environmentObject(model)
                 .background(OverlayWindowConfigurator())
         }
-        .defaultSize(width: 210, height: 40)
+        .defaultSize(width: 224, height: 62)
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .keyboardShortcut("j", modifiers: [.command, .shift])

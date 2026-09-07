@@ -35,6 +35,19 @@ final class HotkeyMonitor: ObservableObject {
             }
         }
 
+        /// Short enough for the overlay, which has one line for everything.
+        var shortLabel: String {
+            switch self {
+            case .rightOption: return "⌥ halten"
+            case .rightCommand: return "⌘ halten"
+            case .rightControl: return "⌃ halten"
+            case .rightShift: return "⇧ halten"
+            case .f13: return "F13 halten"
+            case .f14: return "F14 halten"
+            case .f15: return "F15 halten"
+            }
+        }
+
         var keyCode: UInt16 {
             switch self {
             case .rightOption: return 61

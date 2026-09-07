@@ -162,6 +162,16 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didUnhideNotification)) { _ in
             dismissWindow(id: "jarvis-overlay")
         }
+        // Minimising counts too: the window is gone from the screen either way,
+        // and that is the moment the small panel takes over.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { note in
+            guard (note.object as? NSWindow)?.identifier?.rawValue != "jarvis-overlay" else { return }
+            openWindow(id: "jarvis-overlay")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { note in
+            guard (note.object as? NSWindow)?.identifier?.rawValue != "jarvis-overlay" else { return }
+            dismissWindow(id: "jarvis-overlay")
+        }
         #endif
     }
 
