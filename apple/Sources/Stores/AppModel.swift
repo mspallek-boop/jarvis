@@ -286,10 +286,12 @@ final class AppModel: ObservableObject {
         overlayVisible = false
         hotkey.active = false
         let source = overlayPanel.frame
-        overlayPanel.hide()
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         WindowTransition.expand(from: source)
+        // The pill fades while the window grows out of it, so for a moment both
+        // occupy the same place — which is what sells one as becoming the other.
+        overlayPanel.fadeOut(duration: WindowTransition.expandDuration * 0.5) {}
     }
     private var hotkeyObserver: AnyCancellable?
     #endif

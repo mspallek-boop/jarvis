@@ -9,31 +9,18 @@ import SwiftUI
 /// The APIs that would remove it (`.windowStyle(.plain)`, `.containerBackground`)
 /// need a newer macOS than this app targets. An `NSPanel` has no such opinion:
 /// borderless, transparent, and the view draws the only shape there is.
-/// A panel that tells a click apart from a drag, so the same surface can both
-/// be moved and be pressed to bring the window back.
-final class ClickablePanel: NSPanel {
-    var onClick: (() -> Void)?
-    private var downAt: NSPoint?
-
-    override func mouseDown(with event: NSEvent) {
-        downAt = NSEvent.mouseLocation
-        super.mouseDown(with: event)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer { downAt = nil }
-        super.mouseUp(with: event)
-        guard let start = downAt else { return }
-        let end = NSEvent.mouseLocation
-        // Four points of slack: a click with a shaky hand is still a click, and
-        // a drag of four points was not meant to move anything.
-        if abs(end.x - start.x) < 4, abs(end.y - start.y) < 4 { onClick?() }
-    }
-}
-
+/// A panel that tells a click apart from a drag.
+///
+/// The detection sits on a local event monitor rather than on `mouseDown` /
+/// `mouseUp` overrides: the SwiftUI hosting view consumes those before the
+/// window ever sees them, so the overrides never fired and clicking the pill
+/// did nothing. A monitor runs ahead of that dispatch and works regardless of
+/// what the content view does with the event.
 @MainActor
 final class OverlayPanelController {
-    private var panel: ClickablePanel?
+    private var panel: NSPanel?
+    private var downAt: NSPoint?
+    private var clickMonitor: Any?
     /// Called when the pill is clicked (not dragged).
     var onClick: (() -> Void)?
     private var frameObserver: Any?
@@ -57,8 +44,8 @@ final class OverlayPanelController {
         panel?.orderOut(nil)
     }
 
-    private func make(model: AppModel) -> ClickablePanel {
-        let panel = ClickablePanel(
+    private func make(model: AppModel) -> NSPanel {
+        let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.size),
             // .nonactivatingPanel keeps the app in the background when the
             // panel is clicked, which is what lets it be used mid-hide.
@@ -79,8 +66,8 @@ final class OverlayPanelController {
         host.frame = NSRect(origin: .zero, size: Self.size)
         panel.contentView = host
 
-        panel.onClick = { [weak self] in self?.onClick?() }
         panel.setFrameOrigin(storedOrigin(for: panel))
+        installClickMonitor(for: panel)
         // Remember where the user put it; the default only applies until they
         // move it once.
         frameObserver = NotificationCenter.default.addObserver(
@@ -92,9 +79,43 @@ final class OverlayPanelController {
         return panel
     }
 
+    private func installClickMonitor(for panel: NSPanel) {
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) {
+            [weak self, weak panel] event in
+            guard let self, let panel, event.window === panel else { return event }
+            if event.type == .leftMouseDown {
+                self.downAt = NSEvent.mouseLocation
+                return event
+            }
+            defer { self.downAt = nil }
+            guard let start = self.downAt else { return event }
+            let end = NSEvent.mouseLocation
+            // Four points of slack: a click with a shaky hand is still a click,
+            // and a drag of four points was not meant to move anything.
+            if abs(end.x - start.x) < 4, abs(end.y - start.y) < 4 {
+                Task { @MainActor in self.onClick?() }
+            }
+            return event
+        }
+    }
+
+    /// Fades the pill out instead of snapping it away, so the window appears to
+    /// come out of it rather than to replace it.
+    func fadeOut(duration: TimeInterval, then done: @escaping () -> Void) {
+        guard let panel, panel.isVisible else { done(); return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            panel.animator().alphaValue = 0
+        } completionHandler: {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+            done()
+        }
+    }
+
     /// Centred above the Dock by default — where a push-to-talk indicator
     /// belongs, and where the eye already goes.
-    private func storedOrigin(for panel: ClickablePanel) -> NSPoint {
+    private func storedOrigin(for panel: NSPanel) -> NSPoint {
         if let stored = UserDefaults.standard.array(forKey: Self.positionKey) as? [Double],
            stored.count == 2 {
             let point = NSPoint(x: stored[0], y: stored[1])

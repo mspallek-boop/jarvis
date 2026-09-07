@@ -14,8 +14,15 @@ import AppKit
 /// state — the transition is decoration, never information.
 @MainActor
 enum WindowTransition {
-    private static let collapse: TimeInterval = 0.26
-    private static let expand: TimeInterval = 0.36
+    private static let collapse: TimeInterval = 0.24
+    private static let expand: TimeInterval = 0.42
+
+    /// Accelerating away: slow to leave, then gone. Nothing to read on the way
+    /// out, so it need not settle.
+    private static let leaving = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.9, 0.35)
+    /// Arriving with a small overshoot past 1 — that is the "pop", and it is
+    /// what a spring does that an ease-out cannot.
+    private static let arriving = CAMediaTimingFunction(controlPoints: 0.22, 1.2, 0.36, 1)
     private static let restoredKey = "mainWindowFrameBeforeCollapse"
 
     private static var reduceMotion: Bool {
@@ -37,10 +44,11 @@ enum WindowTransition {
         }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = collapse
-            // Leaving: accelerate away.
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.timingFunction = leaving
             window.animator().setFrame(target, display: true)
-            window.animator().alphaValue = 0
+            // Not to zero: a window that is still faintly there when it reaches
+            // the pill hands over to it, instead of blinking out beforehand.
+            window.animator().alphaValue = 0.35
         } completionHandler: {
             window.orderOut(nil)
             // Put the frame back before the window is next shown, or the
@@ -52,6 +60,8 @@ enum WindowTransition {
     }
 
     /// Spring back out of the pill, centred on the screen it sits on.
+    static var expandDuration: TimeInterval { expand }
+
     static func expand(from source: NSRect) {
         guard let window = mainWindow() else { return }
         let destination = centredFrame(for: window, on: source)
@@ -60,13 +70,14 @@ enum WindowTransition {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        window.alphaValue = 0
+        // Starts visible rather than transparent: a window that fades in while
+        // it grows reads as two effects; growing alone reads as one movement.
+        window.alphaValue = 0.6
         window.setFrame(source, display: false)
         window.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = expand
-            // Arriving: decelerate into place.
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.timingFunction = arriving
             window.animator().setFrame(destination, display: true)
             window.animator().alphaValue = 1
         }
