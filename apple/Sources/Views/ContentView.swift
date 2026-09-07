@@ -10,6 +10,10 @@ struct ContentView: View {
     @State private var runsExpanded = false
     @State private var voiceControlIsVisible = true
     @Namespace private var thinkingOrbNamespace
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    #endif
 
     private let chatScrollSpace = "jarvis-chat-scroll"
     private let chatBottomAnchor = "jarvis-chat-bottom"
@@ -147,6 +151,18 @@ struct ContentView: View {
             Task { await model.setVoiceForeground(!isPresentingSheet) }
         }
         .onDisappear { Task { await model.setVoiceForeground(false) } }
+        #if os(macOS)
+        // Hiding the app (⌘H) is the moment the overlay earns its place: JARVIS
+        // is out of the way but still listening, which is the whole point of a
+        // push-to-talk pill. Bringing the app back takes it away again, so the
+        // two are never on screen at once.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
+            openWindow(id: "jarvis-overlay")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didUnhideNotification)) { _ in
+            dismissWindow(id: "jarvis-overlay")
+        }
+        #endif
     }
 
     private var isPresentingSheet: Bool {
@@ -201,19 +217,21 @@ struct ContentView: View {
         .padding(.vertical, 18)
     }
 
-    /// The other running tasks. The focused one is the big orb, so it is not
-    /// repeated here — with two tasks you see one blob, which is the honest
-    /// picture. A blob is a small OrbView, so the app gains no second visual
-    /// vocabulary, and tapping one centres it. One tile, not a grid: a grid
-    /// says "a JARVIS", and there is one of those.
+    /// One blob per running task — all of them, including the one in focus.
+    ///
+    /// While several things run, the work *is* several things, and showing one
+    /// as a big orb and the rest as satellites misrepresents that. The focused
+    /// one is simply brighter and larger; tapping another centres it. A blob is
+    /// one tile, not a grid: a grid says "a JARVIS", and there is one of those.
     private var taskBlobs: some View {
         HStack(spacing: 14) {
-            ForEach(model.localRuns.filter { $0.id != model.focusedRunID }) { run in
+            ForEach(model.localRuns) { run in
+                let focused = run.id == model.focusedRunID
                 Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
-                    TaskBlobView(size: 30, color: ink, seed: run.id.hashValue)
-                        .opacity(0.55)
+                    TaskBlobView(size: focused ? 34 : 26, color: ink, seed: run.id.hashValue)
+                        .opacity(focused ? 1 : 0.5)
                         // Small on purpose, but never small to hit.
-                        .frame(width: 44, height: 44)
+                        .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -225,9 +243,10 @@ struct ContentView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        .frame(height: model.localRuns.count > 1 ? 44 : 0)
+        .frame(height: model.localRuns.count > 1 ? 48 : 0)
         .opacity(model.localRuns.count > 1 ? 1 : 0)
         .allowsHitTesting(model.localRuns.count > 1)
+        .animation(.easeInOut(duration: 0.25), value: model.localRuns.count)
     }
 
     private var voiceStage: some View {

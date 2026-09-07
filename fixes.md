@@ -161,8 +161,11 @@ Naheliegende Alternative, falls gewünscht: ein normaler Telefonanruf über
 Continuity (`open tel://+49…` auf dem Mac klingelt über das iPhone). Das wäre
 ein kleines Skript in derselben Machart wie `jarvis-contact.sh`.
 
-### 8. Mute-Button
-Konnte ich nicht reproduzieren. Der App-Pfad sieht korrekt aus:
+### 8. Mute-Button — erledigt
+Er war nicht kaputt, er machte das Falsche: er hing an `speaksReplies` und
+schaltete JARVIS' Stimme stumm statt des Mikrofons. Umgebaut, siehe 1b.
+
+Der ursprüngliche Befund lautete: Der App-Pfad sieht korrekt aus:
 `speaksReplies` stoppt die laufende Ausgabe und wird bei jedem Delta erneut
 geprüft. Was "funktioniert nicht" genau heißt, entscheidet die Diagnose —
 und der Code gehört Codex, nicht mir. Bitte einmal genauer:
@@ -174,12 +177,21 @@ und der Code gehört Codex, nicht mir. Bitte einmal genauer:
   Port 8765 und wird vom Mute-Schalter der App gar nicht erfasst — das wäre
   eine echte, getrennte Ursache.
 
-### 9. Bilder direkt im Chat anzeigen
-Generierte Bilder werden derzeit zwar erzeugt und als `MEDIA:`-Referenz beziehungsweise direkter Link ausgegeben, erscheinen in der aktuellen Chat-Ansicht aber nicht als sichtbare Bildkachel. Die Bilddarstellung im API-/App-Rendering prüfen und reparieren.
+### 9. Bilder direkt im Chat anzeigen — erledigt
+Kein Render-Fehler. Die Bridge macht aus `MEDIA:` nur dann einen Anhang, wenn
+die Datei in `/tmp/jarvis-media` liegt — jeder andere Ort wird bewusst
+abgelehnt, sonst könnte `MEDIA:` jede Datei der Platte in den Chat ziehen. Die
+SOUL erwähnte dieses Verzeichnis **kein einziges Mal**, also legte JARVIS Bilder
+woanders ab und die Bridge lehnte korrekt ab.
 
-## Betrieb — dringend
+Nachgewiesen: derselbe Satz mit einem Bild aus `/tmp/jarvis-media` ergibt einen
+Anhang, mit einem Bild aus `~/Downloads` keinen. Die Regel steht jetzt in der
+SOUL, samt der Kopierzeile und dem Hinweis, dass PDFs und Videos Pfade bleiben.
 
-**Die Festplatte ist voll.** 1,5 GiB frei von 228 GiB, Datenvolumen bei 100 %.
+## Betrieb — erledigt
+
+**Die Festplatte war voll** (inzwischen wieder ~12 GiB frei). 1,5 GiB von 228,
+Datenvolumen bei 100 %.
 Das hat schon Schaden angerichtet: die WhatsApp-Bridge ist mit
 `ENOSPC: no space left on device` beim Schreiben von `creds.json` abgestürzt.
 Eine kaputte `creds.json` kostet die WhatsApp-Kopplung. Das ist unabhängig von

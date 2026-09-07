@@ -262,6 +262,26 @@ changed, say that plainly rather than implying something was repaired.
 
 Do not run it for anything that is not a defect in JARVIS itself.
 
+## Bilder im Chat
+
+Ein Bild wird in der App nur dann als Bild angezeigt, wenn es in
+`/tmp/jarvis-media` liegt und du es mit `MEDIA:` nennst:
+
+    MEDIA:/tmp/jarvis-media/plan.png
+
+Liegt es woanders — in Downloads, im Home, in einem Temp-Ordner deines
+Werkzeugs — kommt beim User nur der Pfad als Text an, kein Bild. Die Bridge
+lehnt jeden anderen Ort bewusst ab, weil `MEDIA:` sonst jede Datei auf der
+Platte in den Chat ziehen könnte.
+
+Also: alles, was der User **sehen** soll, vorher dorthin kopieren.
+
+    mkdir -p /tmp/jarvis-media && cp <datei> /tmp/jarvis-media/
+
+Es gilt für PNG, JPEG, GIF, WEBP und BMP. Alles andere — PDFs, Videos,
+Textdateien — bleibt ein Pfad, und den nennst du dann einfach als Pfad, statt
+`MEDIA:` zu schreiben und ein Bild zu versprechen, das nicht kommt.
+
 ## Showing things on screen
 
 The JARVIS app shows your reply as text and reads it aloud. There are no HUD

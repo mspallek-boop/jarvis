@@ -19,8 +19,13 @@ struct OverlayView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            TaskBlobView(size: 13, color: ink.opacity(isActive ? 0.9 : 0.5), seed: 3)
-                .frame(width: 16, height: 16)
+            // The same grid and the same animation as the orb, three across
+            // instead of five: at this size five tiles are mush, and a
+            // different shape would read as a different app.
+            OrbView(active: true,
+                    listening: model.speech.isListening || model.hotkey.isHeld,
+                    thinking: model.isWorking,
+                    size: 22, color: ink, columns: 3)
             if isActive {
                 Waveform(active: model.speech.isListening || model.hotkey.isHeld, ink: ink)
                     .frame(width: 74, height: 15)
@@ -40,8 +45,8 @@ struct OverlayView: View {
                     .foregroundStyle(ink.opacity(0.75))
             }
         }
-        .padding(.horizontal, 14)
-        .frame(height: 34)
+        .padding(.horizontal, 13)
+        .frame(height: 36)
         .background(
             Capsule().fill(Color.black.opacity(0.82))
                 .overlay(Capsule().strokeBorder(ink.opacity(isActive ? 0.22 : 0.10), lineWidth: 1))

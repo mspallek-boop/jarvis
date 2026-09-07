@@ -130,13 +130,17 @@ struct BauhausTileShape: Shape {
     }
 }
 
-private struct CubeGrid: View {
+struct CubeGrid: View {
     let animating: Bool
+    /// Tiles per side. Five is the orb; three is the overlay, where five would
+    /// be mush at 30pt. The animation is identical, so both read as one thing
+    /// at different sizes rather than as two designs.
+    var columns: Int = 5
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var isBauhaus = false
-    @State private var tiles = CubeGrid.makeTileStates()
+    @State private var tiles: [TileState] = []
     @State private var animationTask: Task<Void, Never>?
 
     private struct TileState {
@@ -150,14 +154,14 @@ private struct CubeGrid: View {
     var body: some View {
         GeometryReader { geometry in
             let gridSize = min(geometry.size.width, geometry.size.height)
-            let gap = gridSize * 0.026
-            let tile = (gridSize - gap * 4) / 5
+            let gap = gridSize * 0.026 * (5 / CGFloat(columns))
+            let tile = (gridSize - gap * CGFloat(columns - 1)) / CGFloat(columns)
 
             ZStack {
-                ForEach(0..<25, id: \.self) { index in
+                ForEach(0..<min(tiles.count, columns * columns), id: \.self) { index in
                     let state = tiles[index]
-                    let row = index / 5
-                    let column = index % 5
+                    let row = index / columns
+                    let column = index % columns
 
                     BauhausTileShape(
                         style: state.style,
@@ -181,7 +185,10 @@ private struct CubeGrid: View {
             }
             .frame(width: gridSize, height: gridSize)
         }
-        .onAppear { updateAnimation() }
+        .onAppear {
+            if tiles.isEmpty { tiles = Self.makeTileStates(count: columns * columns) }
+            updateAnimation()
+        }
         .onChange(of: animating) { updateAnimation() }
         .onChange(of: reduceMotion) { updateAnimation() }
         .onChange(of: scenePhase) { updateAnimation() }
@@ -202,7 +209,7 @@ private struct CubeGrid: View {
 
         animationTask = Task { @MainActor in
             while !Task.isCancelled {
-                tiles = Self.makeTileStates()
+                tiles = Self.makeTileStates(count: columns * columns)
                 isBauhaus = true
                 try? await Task.sleep(for: .milliseconds(1_250))
                 guard !Task.isCancelled else { return }
@@ -216,7 +223,7 @@ private struct CubeGrid: View {
         }
     }
 
-    private static func makeTileStates() -> [TileState] {
+    private static func makeTileStates(count: Int = 25) -> [TileState] {
         let palette: [BauhausTileStyle] = [
             .circle, .circle, .circle, .circle, .circle,
             .semicircleTop, .semicircleTop,
@@ -230,9 +237,13 @@ private struct CubeGrid: View {
             .horizontalCapsule, .verticalCapsule,
             .diamond, .diamond
         ]
-        let styles = palette.shuffled()
-        let order = Array(0..<25).shuffled()
-        var delays = Array(repeating: 0.0, count: 25)
+        // A smaller grid takes a slice of the same palette, so a three-by-three
+        // never draws a shape the orb would not.
+        var styles = palette.shuffled()
+        while styles.count < count { styles += palette.shuffled() }
+        styles = Array(styles.prefix(count))
+        let order = Array(0..<count).shuffled()
+        var delays = Array(repeating: 0.0, count: count)
         for (rank, index) in order.enumerated() {
             delays[index] = Double(rank) * 0.018
         }
@@ -259,6 +270,7 @@ struct OrbView: View {
     var thinking: Bool = false
     var size: CGFloat? = nil
     var color: Color? = nil
+    var columns: Int = 5
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -268,7 +280,7 @@ struct OrbView: View {
     }
 
     var body: some View {
-        CubeGrid(animating: listening || thinking)
+        CubeGrid(animating: listening || thinking, columns: columns)
             .foregroundStyle(color ?? ink)
             .opacity(active ? 1 : 0.9)
             .frame(width: gridSize, height: gridSize)
