@@ -176,3 +176,64 @@ def test_library_voice_on_a_free_plan_says_why(monkeypatch):
     handler._handle_elevenlabs_speech('Hallo', 'JBFqnCBsd6RMkjVDRZzb')
     assert sent['status'] == 402
     assert 'bezahlten Tarif' in sent['payload']['error']
+
+
+# --------------------------------------------------- ElevenLabs quota fallback
+
+def call_full(payload, config_overrides=None):
+    """Like call(), but with a realistic config and the raw response head."""
+    config = SimpleNamespace(
+        app_token=TOKEN, hermes_key='k', elevenlabs_key='e',
+        speech_provider='elevenlabs', speech_fallback='macos', macos_voice='',
+        elevenlabs_voice_id='abcdefghij', elevenlabs_model='eleven_flash_v2_5',
+        elevenlabs_stability=0.6, elevenlabs_similarity=0.8, elevenlabs_style=0.0,
+    )
+    for key, value in (config_overrides or {}).items():
+        setattr(config, key, value)
+    body = json.dumps(payload).encode()
+    handler = bridge.JarvisHandler.__new__(bridge.JarvisHandler)
+    handler.config = config
+    handler.rfile = io.BytesIO((
+        f'POST /speech HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\n'
+        f'Content-Length: {len(body)}\r\n\r\n').encode() + body)
+    handler.wfile = io.BytesIO()
+    handler.client_address = ('127.0.0.1', 1)
+    handler.log_message = lambda *args: None
+    handler.handle_one_request()
+    head, content = handler.wfile.getvalue().split(b'\r\n\r\n', 1)
+    return int(head.split(b' ', 2)[1]), head, content
+
+
+def _quota_exhausted(*args, **kwargs):
+    raise bridge.urllib.error.HTTPError('https://api.elevenlabs.io', 401, 'quota_exceeded', {}, None)
+
+
+def test_exhausted_elevenlabs_quota_speaks_with_the_local_voice(monkeypatch):
+    monkeypatch.setattr(bridge, '_open_elevenlabs_speech', _quota_exhausted)
+    status, head, content = call_full({'text': 'Systeme bereit.'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: macos' in head
+    frames = [json.loads(line) for line in content.splitlines() if line]
+    assert frames[-1] == {'type': 'done'}
+    audio = [f for f in frames if f['type'] == 'audio']
+    assert audio and all(f['sample_rate'] == 24000 and f['format'] == 'pcm_s16le' for f in audio)
+
+
+def test_fallback_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(bridge, '_open_elevenlabs_speech', _quota_exhausted)
+    status, _, content = call_full({'text': 'Hallo'}, {'speech_fallback': ''})
+    assert status == 503
+    assert b'Kontingent' in content
+
+
+def test_no_say_binary_reports_the_provider_error(monkeypatch):
+    monkeypatch.setattr(bridge, '_open_elevenlabs_speech', _quota_exhausted)
+    monkeypatch.setattr(bridge.shutil, 'which', lambda name: None)
+    assert call_full({'text': 'Hallo'})[0] == 503
+
+
+def test_local_worker_outage_also_falls_back(monkeypatch):
+    monkeypatch.setattr(bridge, '_open_neural_speech', Mock(side_effect=OSError('down')))
+    status, head, _ = call_full({'text': 'Hallo'}, {'speech_provider': 'local'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: macos' in head

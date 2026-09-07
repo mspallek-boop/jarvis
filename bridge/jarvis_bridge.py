@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import hmac
+import itertools
 import json
 import re
 import os
 import secrets
+import shutil
+import stat
+import subprocess
+import tempfile
 import threading
 import time
+import wave
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -114,6 +121,11 @@ class BridgeConfig:
     hermes_key: str
     app_token: str
     speech_provider: str = "local"
+    # When the configured provider fails — an exhausted ElevenLabs quota
+    # answers 401, and the neural worker is simply not always running —
+    # "macos" keeps JARVIS talking through the built-in `say` command.
+    speech_fallback: str = "macos"
+    macos_voice: str = ""
     elevenlabs_key: str = field(default="", repr=False)
     elevenlabs_voice_id: str = ""
     elevenlabs_model: str = "eleven_multilingual_v2"
@@ -151,6 +163,8 @@ class BridgeConfig:
             file_roots=roots or (Path.home().resolve(),),
             relay_url=os.environ.get("JARVIS_RELAY_URL", "").strip(),
             speech_provider=os.environ.get("JARVIS_TTS_PROVIDER", "local").strip(),
+            speech_fallback=os.environ.get("JARVIS_TTS_FALLBACK", "macos").strip().lower(),
+            macos_voice=os.environ.get("JARVIS_TTS_MACOS_VOICE", "").strip(),
             elevenlabs_key=os.environ.get("ELEVENLABS_API_KEY", "").strip(),
             elevenlabs_voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "").strip(),
             elevenlabs_model=os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2").strip(),
@@ -290,6 +304,100 @@ MARKDOWN_LINK = re.compile(r"(!?)\[([^\]\n]{0,120})\]\((https?://[^\s)]{1,600})\
 BARE_URL = re.compile(r"(?<![(\]<])\bhttps?://[^\s<>\"')\]]{1,600}")
 MAX_ATTACHMENTS = 12
 
+# Match Hermes' actual assistant.completed format: Markdown data URLs. Keep
+# binary payloads out of display/speech text and bound the whole response.
+MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_INLINE_TOTAL_BYTES = 10 * 1024 * 1024
+INLINE_MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".gif": "image/gif",
+                ".webp": "image/webp", ".bmp": "image/bmp"}
+LOCAL_MEDIA_ROOT = Path("/tmp/jarvis-media")
+DATA_IMAGE = re.compile(r"!\[([^\]\n]{0,120})\]\((data:[^\s)]*)\)")
+LOCAL_IMAGE = re.compile(
+    r'''MEDIA:\s*["`']?(/[^\n\r"`<>]*?\.(?:png|jpe?g|gif|webp|bmp))'''
+    r'''(?=[\s"`'*_,;:)\]}]|\.(?:\s|$)|$)["`']?''', re.IGNORECASE)
+
+
+def _inline_mime(blob: bytes) -> str:
+    if blob.startswith(b"BM"):
+        return "image/bmp"
+    return INLINE_MIMES.get(_sniff_image(blob), "")
+
+
+def _read_local_image(raw_path: str) -> bytes:
+    """Read only regular files beneath the dedicated output directory.
+
+    Never resolve an answer's path or follow symlinks. Directory descriptors
+    anchor each open, including during renames. Only the OS /tmp alias is
+    resolved; jarvis-media itself and every child use O_NOFOLLOW.
+    """
+    roots = (str(LOCAL_MEDIA_ROOT), str(LOCAL_MEDIA_ROOT.parent.resolve() / LOCAL_MEDIA_ROOT.name))
+    relative = next((raw_path[len(root) + 1:] for root in roots
+                     if raw_path.startswith(root + "/")), None)
+    if relative is None or len(raw_path) > 1024:
+        raise ValueError("Bildpfad nicht freigegeben")
+    parts = relative.split("/")
+    if any(not part or part.startswith(".") or "\x00" in part or "\\" in part for part in parts):
+        raise ValueError("Ungültiger Bildpfad")
+    fd = os.open(LOCAL_MEDIA_ROOT.parent.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in [LOCAL_MEDIA_ROOT.name, *parts[:-1]]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        image_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        with os.fdopen(image_fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 < info.st_size <= MAX_INLINE_IMAGE_BYTES:
+                raise ValueError("Bilddatei nicht zulässig")
+            blob = source.read(MAX_INLINE_IMAGE_BYTES + 1)
+            if len(blob) > MAX_INLINE_IMAGE_BYTES:
+                raise ValueError("Bild zu groß")
+            return blob
+    finally:
+        os.close(fd)
+
+
+def prepare_answer_media(text: str) -> tuple[str, list[dict]]:
+    """Normalize inline images once, for both /chat and /chat/stream."""
+    images: dict[str, dict] = {}
+    total = 0
+
+    def add(blob: bytes, title: str, declared_mime: str = "") -> str:
+        nonlocal total
+        if not 0 < len(blob) <= MAX_INLINE_IMAGE_BYTES:
+            raise ValueError("Bild zu groß")
+        mime = _inline_mime(blob)
+        if not mime or (declared_mime and mime != declared_mime):
+            raise ValueError("Ungültiger Bildtyp")
+        url = f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+        if url not in images:
+            if len(images) >= MAX_ATTACHMENTS or total + len(blob) > MAX_INLINE_TOTAL_BYTES:
+                raise ValueError("Zu viele Bilder")
+            total += len(blob)
+            images[url] = {"kind": "image", "url": url, "title": title[:120]}
+        return "[Bild]"
+
+    def data_image(match: re.Match) -> str:
+        try:
+            header, encoded = match[2].split(",", 1)
+            if header not in {f"data:{mime};base64" for mime in INLINE_MIMES.values()}:
+                raise ValueError("Ungültiger Bildtyp")
+            if len(encoded) > 4 * ((MAX_INLINE_IMAGE_BYTES + 2) // 3):
+                raise ValueError("Bild zu groß")
+            return add(base64.b64decode(encoded, validate=True), match[1], header[5:-7])
+        except (ValueError, OSError):
+            return "[Bild nicht verfügbar]"
+
+    def local_image(match: re.Match) -> str:
+        try:
+            return add(_read_local_image(match[1]), Path(match[1]).name)
+        except (ValueError, OSError):
+            return "[Bild nicht verfügbar]"
+
+    clean = DATA_IMAGE.sub(data_image, text)
+    clean = LOCAL_IMAGE.sub(local_image, clean)
+    return clean, (list(images.values()) + extract_attachments(clean))[:MAX_ATTACHMENTS]
+
 
 def _attachment_kind(url: str, forced_image: bool) -> str:
     if forced_image:
@@ -410,6 +518,99 @@ def _open_elevenlabs_speech(text: str, config, voice_id: str = ""):
     return opener.open(request, timeout=20)
 
 
+def _ndjson_lines(upstream) -> Iterator[bytes]:
+    """Frames from the neural worker, which already speaks NDJSON.
+
+    Passed through byte for byte: re-encoding would only risk changing audio
+    the worker already framed correctly.
+    """
+    total = 0
+    while True:
+        line = upstream.readline(800_000)
+        if not line:
+            break
+        total += len(line)
+        if len(line) >= 800_000 or total > 4_000_000 or not line.endswith(b"\n"):
+            raise ValueError("Speech stream limit")
+        yield line
+
+
+def _encoded_frames(frames: Iterator[dict]) -> Iterator[bytes]:
+    for frame in frames:
+        yield json.dumps(frame).encode() + b"\n"
+
+
+# Preference order for the local voice when none is configured. JARVIS answers
+# in German, and `say` with no -v takes the system default — which is English on
+# a stock Mac and mangles every German sentence it is handed. Premium German
+# voices are a free download in System Settings > Accessibility > Spoken
+# Content > System Voice > Manage Voices; install one and name it in
+# JARVIS_TTS_MACOS_VOICE, and this list stops mattering.
+GERMAN_SAY_VOICES = ("Markus", "Yannick", "Petra", "Anna")
+
+
+@functools.lru_cache(maxsize=1)
+def _default_german_voice() -> str:
+    try:
+        listing = subprocess.run(["say", "-v", "?"], capture_output=True, timeout=10,
+                                 check=True, text=True).stdout
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    installed = {}
+    for line in listing.splitlines():
+        parts = line.split()
+        # "Anna                de_DE    # Hallo! ..." — name may hold spaces, so
+        # the locale token is what separates the name from the sample sentence.
+        for index, token in enumerate(parts):
+            if token.startswith("de_"):
+                installed.setdefault(parts[0], " ".join(parts[:index]))
+                break
+    for name in GERMAN_SAY_VOICES:
+        if name in installed:
+            return installed[name]
+    return next(iter(installed.values()), "")
+
+
+def _macos_speech_frames(text: str, voice: str = "") -> Iterator[dict]:
+    """Speak locally with the macOS `say` command, framed like the cloud voice.
+
+    Yields the same {"type": "audio", sample_rate 24000, "pcm_s16le"} NDJSON the
+    app already plays, so an exhausted ElevenLabs quota or a stopped neural
+    worker costs the voice its timbre, never its existence. Offline and free —
+    `say` is part of macOS.
+    """
+    if not shutil.which("say"):
+        raise RuntimeError("macOS say not available")
+    with tempfile.TemporaryDirectory(prefix="jarvis-say-") as tmp:
+        wav_path = os.path.join(tmp, "out.wav")
+        command = ["say", "-o", wav_path, "--data-format=LEI16@24000", "--channels=1"]
+        voice = voice or _default_german_voice()
+        if voice:
+            command += ["-v", voice]
+        command += ["--", text]
+        try:
+            subprocess.run(command, check=True, capture_output=True, timeout=60)
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise RuntimeError("macOS say failed") from exc
+        with wave.open(wav_path, "rb") as handle:
+            if (handle.getframerate(), handle.getnchannels(), handle.getsampwidth()) != (24000, 1, 2):
+                raise RuntimeError("macOS say produced an unexpected audio format")
+            total = 0
+            while True:
+                # 4096 frames keeps each NDJSON line well under the app's limit.
+                chunk = handle.readframes(4096)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 24_000 * 2 * 60:
+                    raise RuntimeError("Audio limit")
+                yield {"type": "audio", "sample_rate": 24000, "format": "pcm_s16le",
+                       "data": base64.b64encode(chunk).decode("ascii")}
+    if not total:
+        raise RuntimeError("Incomplete audio")
+    yield {"type": "done"}
+
+
 def _pcm_frames(upstream):
     pending = b""
     total = 0
@@ -431,6 +632,97 @@ def _pcm_frames(upstream):
     if pending or not total:
         raise ValueError("Incomplete audio")
     yield {"type": "done"}
+
+
+# How many turns may run side by side under one conversation name. Each lane is
+# a real Hermes session; the cap keeps a client that never stops asking from
+# opening sessions without end.
+MAX_PARALLEL_CONVERSATIONS = 4
+
+NOTIFY_STATE = Path.home() / ".hermes" / "jarvis-notifications.json"
+# A nudge is worth showing for a while and then not at all. Fifty is far more
+# than a clean interface should ever display; it is a ceiling, not a target.
+MAX_NOTIFICATIONS = 50
+NOTIFY_KINDS = {"whatsapp_reply", "task", "info"}
+
+
+class Notifications:
+    """The one place JARVIS can tell the app something without being asked.
+
+    Deliberately a pull queue, not a push: the app already polls, a poll cannot
+    wake a sleeping phone into a battery drain, and a missed connection means a
+    late notification rather than a lost one.
+
+    Text is written by JARVIS's own tools on this machine, never by a remote
+    party — the WhatsApp watcher passes a contact name, never message content.
+    """
+
+    def __init__(self, path: Path = NOTIFY_STATE):
+        self.path = path
+        self._lock = threading.Lock()
+        self._items: list[dict] = []
+        self._next_id = 1
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            items = data.get("items")
+            if isinstance(items, list):
+                self._items = [i for i in items if isinstance(i, dict) and "id" in i][-MAX_NOTIFICATIONS:]
+                self._next_id = max((int(i["id"]) for i in self._items), default=0) + 1
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _persist(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.path.with_suffix(".tmp")
+            temp.write_text(json.dumps({"items": self._items}, ensure_ascii=False), encoding="utf-8")
+            os.chmod(temp, 0o600)   # holds contact names
+            temp.replace(self.path)
+        except OSError:
+            pass                     # a full disk must not take the bridge down
+
+    def add(self, kind: str, title: str, text: str = "") -> dict:
+        if kind not in NOTIFY_KINDS:
+            raise ValueError(f"Unbekannte Art: {kind}")
+        title = " ".join(str(title).split())[:80]
+        text = " ".join(str(text).split())[:200]
+        if not title:
+            raise ValueError("title fehlt")
+        with self._lock:
+            item = {"id": self._next_id, "kind": kind, "title": title,
+                    "text": text, "at": time.time(), "read": False}
+            self._next_id += 1
+            self._items.append(item)
+            del self._items[:-MAX_NOTIFICATIONS]
+            self._persist()
+            return dict(item)
+
+    def since(self, after: int = 0, unread_only: bool = False) -> list[dict]:
+        with self._lock:
+            return [dict(i) for i in self._items
+                    if i["id"] > after and (not unread_only or not i.get("read"))]
+
+    def mark_read(self, through: int) -> int:
+        """Read up to and including `through` — the app confirms what it showed."""
+        with self._lock:
+            count = 0
+            for item in self._items:
+                if item["id"] <= through and not item.get("read"):
+                    item["read"] = True
+                    count += 1
+            if count:
+                self._persist()
+            return count
+
+    def unread(self) -> int:
+        with self._lock:
+            return sum(1 for i in self._items if not i.get("read"))
+
+
+NOTIFICATIONS = Notifications()
 
 
 class HermesClient:
@@ -595,27 +887,76 @@ class HermesClient:
         with self._state_lock:
             return self._conversation_locks.setdefault(conversation, threading.Lock())
 
-    def chat(self, text: str, conversation: str, client_run_id: str = "", on_event=None) -> dict:
+    def _acquire_conversation(self, conversation: str, parallel: bool) -> tuple[threading.Lock, str]:
+        """Reserve a conversation to run a turn in, and say which one it got.
+
+        Hermes keeps one turn lease per session (`session_turn_leases`, keyed by
+        conversation), so two turns in one conversation cannot overlap however
+        the bridge is written — dropping this lock would only move the queue one
+        layer down. Measured: two turns in one conversation take 2.8s + 7.7s,
+        the same two in separate conversations 2.3s and 2.7s wall clock.
+
+        Real parallelism therefore needs a second session. When the caller asks
+        for it and the conversation is busy, the turn runs in a side
+        conversation — `jarvis-apple#2` — which starts immediately.
+
+        The cost is honest and unavoidable: a side conversation does not carry
+        the main one's history. Two turns sharing one transcript would interleave
+        into nonsense, so "run these two things at once" works and "and what
+        about the thing you just said" belongs in the main conversation. The
+        caller is told which conversation it actually got.
+        """
+        lock = self._lock_for(conversation)
+        if lock.acquire(blocking=False):
+            return lock, conversation
+        if not parallel:
+            lock.acquire()                       # queue, exactly as before
+            return lock, conversation
+        for index in range(2, MAX_PARALLEL_CONVERSATIONS + 1):
+            name = f"{conversation}#{index}"
+            side = self._lock_for(name)
+            if side.acquire(blocking=False):
+                return side, name
+        # Every lane busy: queueing is better than opening sessions without end.
+        lock.acquire()
+        return lock, conversation
+
+    def chat(self, text: str, conversation: str, client_run_id: str = "",
+             on_event=None, parallel: bool = False) -> dict:
         if client_run_id:
             # Registered before the lock so a /stop arriving while this turn is
             # still queued behind another client is remembered, not lost.
             with self._active_runs_lock:
                 if client_run_id in self._client_runs:
                     raise ValueError("client_run_id ist bereits aktiv")
-                self._client_runs[client_run_id] = {"cancelled": False, "phase": "queued"}
+                self._client_runs[client_run_id] = {"cancelled": False, "phase": "queued",
+                                                    "conversation": conversation,
+                                                    "started": time.time()}
+        lock, actual = self._acquire_conversation(conversation, parallel)
         try:
-            with self._lock_for(conversation):
-                if client_run_id:
-                    with self._active_runs_lock:
-                        if self._client_runs.get(client_run_id, {}).get("cancelled"):
-                            raise RuntimeError("Abgebrochen, bevor der Turn startete")
-                try:
-                    return self._chat_once(text, conversation, False, client_run_id, **({"on_event": on_event} if on_event else {}))
-                except urllib.error.HTTPError as exc:
-                    if exc.code != HTTPStatus.NOT_FOUND:
-                        raise
-                    return self._chat_once(text, conversation, True, client_run_id, **({"on_event": on_event} if on_event else {}))
+            if client_run_id and actual != conversation:
+                # The board must show where the turn really runs, not where it
+                # was aimed.
+                with self._active_runs_lock:
+                    entry = self._client_runs.get(client_run_id)
+                    if entry is not None:
+                        entry["conversation"] = actual
+            if client_run_id:
+                with self._active_runs_lock:
+                    if self._client_runs.get(client_run_id, {}).get("cancelled"):
+                        raise RuntimeError("Abgebrochen, bevor der Turn startete")
+            try:
+                result = self._chat_once(text, actual, False, client_run_id,
+                                         **({"on_event": on_event} if on_event else {}))
+            except urllib.error.HTTPError as exc:
+                if exc.code != HTTPStatus.NOT_FOUND:
+                    raise
+                result = self._chat_once(text, actual, True, client_run_id,
+                                         **({"on_event": on_event} if on_event else {}))
+            result["conversation"] = actual
+            return result
         finally:
+            lock.release()
             if client_run_id:
                 # chat() owns the entry's lifetime: it is created before the
                 # conversation lock and removed only when the whole turn,
@@ -640,6 +981,7 @@ class HermesClient:
         pending: list[str] = []
         announced_text = False
         run_id = ""
+        prepared = None
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
                 for event, data in parse_sse(response):
@@ -690,11 +1032,14 @@ class HermesClient:
                                 "preview": str(data.get("preview") or "")[:200],
                             })
                     elif event == "assistant.completed" and data.get("content"):
-                        parts = [str(data["content"])]
+                        prepared = prepare_answer_media(str(data["content"]))
+                        parts = [prepared[0]]
                         # No tool followed, so the held text was the answer.
                         # Release it now so the app can show and speak it.
                         if on_event and pending:
-                            on_event({"type": "delta", "text": "".join(pending)})
+                            # The final API text can replace MEDIA tags with
+                            # megabytes of base64. Never send either to speech.
+                            on_event({"type": "delta", "text": prepared[0]})
                         pending.clear()
                     elif event in {"run.failed", "error"}:
                         raise RuntimeError(str(data.get("error") or data.get("message") or "Hermes run failed"))
@@ -719,8 +1064,9 @@ class HermesClient:
                     if entry is not None:
                         entry.pop("run_id", None)
         answer = "".join(parts).strip()
+        answer, attachments = prepared if prepared is not None else prepare_answer_media(answer)
         return {"text": answer, "tools": tools, "run_id": run_id,
-                "attachments": extract_attachments(answer)}
+                "attachments": attachments}
 
     def _set_activity(self, client_run_id: str, phase: str, tool: str = "") -> None:
         # Status exposes tool identifiers only: never arguments, output or text.
@@ -735,8 +1081,33 @@ class HermesClient:
             entry = self._client_runs.get(client_run_id)
             if entry is None:
                 return {"phase": "unknown", "tool": ""}
-            return {"phase": "stopping" if entry.get("cancelled") else entry.get("phase", "thinking"),
-                    "tool": entry.get("tool", "")}
+            return self._activity_entry(entry)
+
+    @staticmethod
+    def _activity_entry(entry: dict) -> dict:
+        return {"phase": "stopping" if entry.get("cancelled") else entry.get("phase", "thinking"),
+                "tool": entry.get("tool", "")}
+
+    def active_runs(self) -> list[dict]:
+        """Every turn currently in flight, for a client that shows more than one.
+
+        Turns in one conversation serialise behind a lock and report "queued"
+        until their turn comes; turns in different conversations really do run
+        at the same time. Phase, tool name, conversation and age only — never a
+        prompt, an answer or a tool argument, because this is readable by any
+        holder of the app token and a status board is not a transcript.
+        """
+        now = time.time()
+        with self._active_runs_lock:
+            runs = [
+                {"client_run_id": run_id, **self._activity_entry(entry),
+                 "conversation": entry.get("conversation", ""),
+                 "seconds": round(max(0.0, now - entry.get("started", now)), 1)}
+                for run_id, entry in self._client_runs.items()
+            ]
+        # Longest-running first: the one worth worrying about leads the board.
+        runs.sort(key=lambda run: run["seconds"], reverse=True)
+        return runs
 
     def cancel_client_run(self, client_run_id: str) -> dict:
         """Cancel only the turn this caller started.
@@ -921,6 +1292,25 @@ class JarvisHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"provider": provider, "voices": voices,
                                        "selected": self.config.elevenlabs_voice_id})
             return
+        if parsed.path == "/notifications":
+            query = parse_qs(parsed.query)
+            try:
+                after = int((query.get("since") or ["0"])[0])
+            except ValueError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Ungültiger since-Wert"})
+                return
+            unread_only = (query.get("unread") or [""])[0] in {"1", "true", "yes"}
+            items = NOTIFICATIONS.since(max(0, after), unread_only)
+            self._json(HTTPStatus.OK, {"notifications": items,
+                                       "unread": NOTIFICATIONS.unread(),
+                                       "latest": items[-1]["id"] if items else after})
+            return
+        if parsed.path == "/runs":
+            # The whole board, for a client that shows several running tasks at
+            # once. /activity stays exactly as it was: one run, by id.
+            runs = self.client.active_runs()
+            self._json(HTTPStatus.OK, {"runs": runs, "count": len(runs)})
+            return
         if parsed.path == "/activity":
             values = parse_qs(parsed.query).get("client_run_id", [])
             if len(values) != 1 or not CLIENT_RUN_ID_RE.fullmatch(values[0]):
@@ -956,94 +1346,90 @@ class JarvisHandler(BaseHTTPRequestHandler):
         requested_voice = body.get("voice_id") or ""
         if not isinstance(requested_voice, str) or len(requested_voice) > 80:
             raise ValueError("Ungültige Stimme")
+        text = text.strip()
         provider = getattr(self.config, "speech_provider", "local")
         if provider == "elevenlabs":
             try:
                 voice = resolve_voice_id(requested_voice.strip(), self.config)
             except ValueError as exc:
+                # A bad voice id is the caller's mistake, not an outage — the
+                # local voice would only paper over a request worth fixing.
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 return
-            self._handle_elevenlabs_speech(text.strip(), voice)
+            self._handle_elevenlabs_speech(text, voice)
             return
         if provider != "local":
-            self._json(503, {"error": "Sprachanbieter nicht konfiguriert"})
+            self._speak_locally_or_fail(text, "Sprachanbieter nicht konfiguriert", 503)
             return
         try:
-            upstream = _open_neural_speech(text.strip(), self.config.app_token)
-        except urllib.error.HTTPError as exc:
-            self._json(429 if exc.code == 429 else 503, {"error": "Neuronale Stimme nicht verfügbar"})
-            return
+            upstream = _open_neural_speech(text, self.config.app_token)
         except Exception:
-            self._json(503, {"error": "Neuronale Stimme nicht verfügbar"})
+            self._speak_locally_or_fail(text, "Neuronale Stimme nicht verfügbar", 503)
             return
         with upstream:
-            self.send_response(200)
-            self.send_header("X-JARVIS-Speech-Provider", "local")
-            self.send_header("Content-Type", "application/x-ndjson")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            try:
-                total = 0
-                while True:
-                    line = upstream.readline(800_000)
-                    if not line:
-                        break
-                    total += len(line)
-                    if len(line) >= 800_000 or total > 4_000_000 or not line.endswith(b"\n"):
-                        raise ValueError("Speech stream limit")
-                    self.wfile.write(line)
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                return
-            except Exception:
-                try:
-                    self.wfile.write(b'{"type":"error","error":"Sprachausgabe unterbrochen"}\n')
-                    self.wfile.flush()
-                except OSError:
-                    pass
+            self._stream_speech_frames(_ndjson_lines(upstream), "local")
 
     def _handle_elevenlabs_speech(self, text: str, voice_id: str = "") -> None:
         try:
             upstream = _open_elevenlabs_speech(text, self.config, voice_id)
         except urllib.error.HTTPError as exc:
-            # 402 means the account lists the voice but the plan may not use it.
-            # Library voices appear in /voices on every tier yet only paid plans
-            # can synthesise with them, so say that instead of "unavailable".
-            if exc.code == 402:
-                self._json(402, {"error": "Diese Stimme gehört zur ElevenLabs-Bibliothek "
-                                          "und benötigt einen bezahlten Tarif. Wähle eine "
-                                          "der vorinstallierten Stimmen."})
-                return
-            self._json(429 if exc.code == 429 else 503,
-                       {"error": "ElevenLabs nicht verfügbar. Konto und Kontingent prüfen."})
+            # 401 is what an exhausted free-tier quota answers, 429 a rate limit
+            # and 402 a voice the plan may not synthesise. All three mean the
+            # cloud voice is gone for now — speak locally rather than go silent.
+            message = {
+                402: "Diese Stimme gehört zur ElevenLabs-Bibliothek und benötigt einen "
+                     "bezahlten Tarif. Wähle eine der vorinstallierten Stimmen.",
+            }.get(exc.code, "ElevenLabs nicht verfügbar. Konto und Kontingent prüfen.")
+            self._speak_locally_or_fail(text, message, 402 if exc.code == 402 else (429 if exc.code == 429 else 503))
             return
         except Exception:
-            self._json(503, {"error": "ElevenLabs-Stimme noch nicht eingerichtet oder nicht erreichbar."})
+            self._speak_locally_or_fail(
+                text, "ElevenLabs-Stimme noch nicht eingerichtet oder nicht erreichbar.", 503)
             return
         with upstream:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-ndjson")
-            self.send_header("X-JARVIS-Speech-Provider", "elevenlabs")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            try:
-                for frame in _pcm_frames(upstream):
-                    self.wfile.write(json.dumps(frame).encode() + b"\n")
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
-                pass
-            except Exception:
-                try:
-                    self.wfile.write(b'{"type":"error","error":"Sprachausgabe unterbrochen"}\n')
-                    self.wfile.flush()
-                except OSError:
-                    pass
+            self._stream_speech_frames(_encoded_frames(_pcm_frames(upstream)), "elevenlabs")
 
-    def _handle_chat_stream(self, message: str, conversation: str, client_run_id: str) -> None:
+    def _speak_locally_or_fail(self, text: str, message: str, status: int) -> None:
+        """Last resort before silence: the built-in macOS voice.
+
+        Only when voice.fallback is "macos". Otherwise the original provider
+        error is reported unchanged, so a misconfiguration stays visible instead
+        of hiding behind a voice the user did not ask for.
+        """
+        if getattr(self.config, "speech_fallback", "") != "macos":
+            self._json(status, {"error": message})
+            return
+        try:
+            frames = _macos_speech_frames(text, getattr(self.config, "macos_voice", ""))
+            first = next(iter(frames))
+        except Exception:
+            self._json(status, {"error": message})
+            return
+        self._stream_speech_frames(_encoded_frames(itertools.chain([first], frames)), "macos")
+
+    def _stream_speech_frames(self, lines: Iterator[bytes], provider: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("X-JARVIS-Speech-Provider", provider)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for line in lines:
+                self.wfile.write(line)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
+        except Exception:
+            try:
+                self.wfile.write(b'{"type":"error","error":"Sprachausgabe unterbrochen"}\n')
+                self.wfile.flush()
+            except OSError:
+                pass
+
+    def _handle_chat_stream(self, message: str, conversation: str, client_run_id: str,
+                            parallel: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-store")
@@ -1058,7 +1444,8 @@ class JarvisHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         try:
             emit({"type": "activity", "phase": "thinking", "tool": ""})
-            result = self.client.chat(message, conversation, client_run_id, on_event=emit)
+            result = self.client.chat(message, conversation, client_run_id, on_event=emit,
+                                      **({"parallel": True} if parallel else {}))
             result["duration_ms"] = round((time.monotonic() - started) * 1000)
             emit({"type": "done", "response": result})
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
@@ -1088,6 +1475,30 @@ class JarvisHandler(BaseHTTPRequestHandler):
             if self.path == "/speech":
                 self._handle_speech(body)
                 return
+            if self.path == "/notify":
+                # Written by JARVIS's own helpers on this machine (the WhatsApp
+                # reply watcher today). Same app token as everything else: the
+                # bridge is loopback-bound and there is no second trust level.
+                try:
+                    item = NOTIFICATIONS.add(
+                        str(body.get("kind") or "info"),
+                        str(body.get("title") or ""),
+                        str(body.get("text") or ""))
+                except ValueError as exc:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self._json(HTTPStatus.OK, {"notification": item,
+                                           "unread": NOTIFICATIONS.unread()})
+                return
+            if self.path == "/notifications/read":
+                try:
+                    through = int(body.get("through") or 0)
+                except (TypeError, ValueError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "Ungültiger through-Wert"})
+                    return
+                marked = NOTIFICATIONS.mark_read(through)
+                self._json(HTTPStatus.OK, {"marked": marked, "unread": NOTIFICATIONS.unread()})
+                return
             if self.path in {"/chat", "/chat/stream"}:
                 message = str(body.get("message") or "").strip()
                 conversation = str(body.get("conversation") or "jarvis-apple").strip()
@@ -1102,13 +1513,17 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 client_run_id = str(body.get("client_run_id") or "").strip()
                 if client_run_id and not CLIENT_RUN_ID_RE.fullmatch(client_run_id):
                     raise ValueError("Ungültige client_run_id")
+                # Opt-in: without it a second turn queues behind the first, which
+                # is what a client wants when the two belong to one thought.
+                parallel = bool(body.get("parallel"))
                 if self.path == "/chat/stream":
                     if not client_run_id:
                         raise ValueError("client_run_id fehlt")
-                    self._handle_chat_stream(message, conversation, client_run_id)
+                    self._handle_chat_stream(message, conversation, client_run_id, parallel)
                     return
                 started = time.monotonic()
-                result = self.client.chat(message, conversation, client_run_id)
+                result = self.client.chat(message, conversation, client_run_id,
+                                          **({"parallel": True} if parallel else {}))
                 result["duration_ms"] = round((time.monotonic() - started) * 1000)
                 self._json(HTTPStatus.OK, result)
                 return

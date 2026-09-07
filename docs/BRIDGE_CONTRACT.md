@@ -389,3 +389,120 @@ Die Bridge prüft, dass der Pfad **innerhalb des Uploadordners** liegt, und
 stellt der Nachricht dann eine Zeile voran, die den Agenten auf
 `vision_analyze` verweist. Jeder andere Pfad ergibt `400` — sonst wäre das ein
 Weg, den Agenten beliebige Dateien auf dem Mac lesen zu lassen.
+
+## Lokale Ersatzstimme und Aufgaben-Board (2026-09-07)
+
+### `POST /speech` fällt auf die macOS-Stimme zurück
+
+Der ElevenLabs-Account ist auf dem Free-Tier und das Kontingent ist
+aufgebraucht (10.000/10.000 Zeichen), also antwortet ElevenLabs auf jede
+Anfrage mit HTTP 401. Vorher wurde daraus ein 503 und JARVIS blieb stumm.
+
+Die Bridge spricht jetzt lokal weiter, wenn der konfigurierte Anbieter nicht
+kann — bei 401 (Kontingent), 402 (Stimme braucht bezahlten Tarif), 429
+(Rate Limit), fehlendem Schlüssel, und ebenso wenn der neuronale Worker auf
+`127.0.0.1:8788` nicht läuft.
+
+- Antwort bleibt **exakt dasselbe NDJSON** wie bisher: `{"type":"audio",
+  "sample_rate":24000, "format":"pcm_s16le", "data":"<base64>"}`, abgeschlossen
+  mit `{"type":"done"}`. **`NeuralSpeechPlayer` braucht keine Änderung.**
+- Neuer Antwort-Header `X-JARVIS-Speech-Provider: elevenlabs | local | macos`.
+  Optional für die App: bei `macos` liesse sich ein dezenter Hinweis anzeigen,
+  dass gerade die Ersatzstimme läuft. Kein Pflicht-Feld.
+- Steuerung über `~/.hermes/.env`:
+  `JARVIS_TTS_FALLBACK=macos` (Default; `""` schaltet ab und liefert wieder den
+  Originalfehler) und `JARVIS_TTS_MACOS_VOICE=<Name>`. Ohne gesetzte Stimme
+  wählt die Bridge die beste installierte de_DE-Stimme (aktuell "Anna"), damit
+  nicht eine englische Systemstimme deutsche Sätze liest.
+- Nur wenn `say` fehlt oder ebenfalls scheitert, kommt der ursprüngliche Fehler
+  (503/429/402) unverändert zurück.
+
+Verifiziert am laufenden Dienst: HTTP 200, Header `macos`, 4,71 s Audio bei
+24 kHz mono.
+
+### `GET /runs` — alle laufenden Turns (neu)
+
+Für die Multitasking-Anzeige. Gleicher App-Bearer wie `/chat`.
+
+```json
+{"count": 1,
+ "runs": [{"client_run_id": "probe-1788765958",
+           "phase": "thinking",
+           "tool": "",
+           "conversation": "claude-probe",
+           "seconds": 6.2}]}
+```
+
+- `phase`: `queued | thinking | answering | tool | stopping` — dieselben Werte
+  wie `/activity`.
+- `seconds`: Alter des Turns, längster zuerst.
+- Enthält **nie** Prompt, Antwort oder Tool-Argumente (per Test abgesichert).
+- `GET /activity?client_run_id=…` ist unverändert; `/runs` ist additiv.
+
+Wichtig für die Erwartungshaltung in der UI: Turns **derselben** Conversation
+serialisieren in der Bridge. Der zweite steht als `queued`, bis der erste
+fertig ist. Echte Parallelität gibt es nur über **verschiedene**
+`conversation`-Werte — wenn die App mehrere Aufgaben gleichzeitig laufen lassen
+soll, muss sie dafür getrennte Conversations vergeben.
+
+Verifiziert am laufenden Dienst: leeres Board `{"runs":[],"count":0}`, ohne
+Token 401, und ein echter Turn erschien mit `thinking` → `answering` und
+verschwand beim Abschluss.
+
+### `GET /notifications`, `POST /notify`, `POST /notifications/read` (neu)
+
+Der Kanal, über den JARVIS von sich aus etwas melden kann — statt einer
+macOS-Mitteilung, die das Betriebssystem ist und nicht JARVIS. Gleicher
+App-Bearer wie `/chat`.
+
+```
+GET  /notifications?since=<id>&unread=1
+POST /notifications/read   {"through": <id>}
+POST /notify               {"kind","title","text"}
+```
+
+```json
+{"notifications": [{"id": 1, "kind": "whatsapp_reply", "title": "Rici",
+                    "text": "hat geantwortet", "at": 1788772924.37,
+                    "read": false}],
+ "unread": 1, "latest": 1}
+```
+
+- `kind`: `whatsapp_reply | task | info`; alles andere wird mit 400 abgelehnt.
+- `title` ≤ 80, `text` ≤ 200 Zeichen, beide auf eine Zeile normalisiert.
+- Warteschlange auf 50 begrenzt, überlebt einen Bridge-Neustart, Datei 600.
+- `latest` ist der Cursor für das nächste `since`.
+- Pull statt Push mit Absicht: ein verpasster Moment wird zu einer späten
+  Benachrichtigung, nie zu einer verlorenen, und nichts weckt ein Telefon.
+- `POST /notify` schreiben JARVIS' eigene Helfer auf dieser Maschine, heute der
+  WhatsApp-Antwort-Watcher. Nachrichteninhalt wird nie übertragen.
+
+Die zugehörige UI-Vorgabe steht in `docs/APP_UI_MULTITASKING_NOTIFICATIONS.md`.
+
+### `POST /chat` und `/chat/stream` nehmen `parallel` (neu)
+
+`{"message": …, "conversation": "jarvis-apple", "client_run_id": …,
+  "parallel": true}`
+
+Ohne das Feld ändert sich nichts: ein zweiter Turn derselben Conversation wartet
+wie bisher. Mit `parallel: true` läuft er sofort, in einer Nebenspur
+(`jarvis-apple#2` … `#4`), und die Antwort nennt die tatsächliche Conversation:
+
+```json
+{"text": "…", "conversation": "jarvis-apple#2", "run_id": "…", "tools": []}
+```
+
+Hintergrund: Hermes hält eine Turn-Lease **pro Session**
+(`session_turn_leases`, Schlüssel ist die Conversation). Zwei Turns in einer
+Session können daher nicht überlappen, egal wie die Bridge gebaut ist — das
+Entfernen des Bridge-Locks hätte die Warteschlange nur eine Ebene tiefer
+verschoben. Gemessen: zwei Turns in einer Conversation 2,8 s + 7,7 s, dieselben
+zwei in getrennten Conversations 2,3 s und 2,7 s Wanduhr.
+
+Eine Nebenspur trägt die Historie der Hauptunterhaltung **nicht**. Das Flag ist
+für „mach beides gleichzeitig", nicht für eine Rückfrage. Maximal vier Spuren
+pro Name, danach wird gewartet — sonst öffnet ein Client ohne Ende Sessions.
+
+Verifiziert am laufenden Dienst: drei Aufgaben unter einem Namen, 1,8 / 1,9 /
+2,1 s, Gesamtdauer 3 s; `/runs` zeigte drei Einträge gleichzeitig in
+`answering`, jeder in seiner eigenen Spur.
