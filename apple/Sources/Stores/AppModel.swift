@@ -713,10 +713,15 @@ final class AppModel: ObservableObject {
                         if phase == "tool", !announcedTool, self.liveResponse.isEmpty,
                            shouldSpeak, self.speaksReplies, self.voiceForeground {
                             announcedTool = true
+                            // Only say something that tells the user something.
+                            // A web search is worth announcing because it takes
+                            // time; the generic case was "Ich prüfe das", which
+                            // says nothing, costs a spoken sentence and delays
+                            // the actual answer. Silence is the better filler.
                             let tool = (frame.tool ?? "").lowercased()
-                            let feedback = tool.contains("search") || tool.contains("web") || tool.contains("browser")
-                                ? "Ich schaue im Web nach." : "Ich prüfe das."
-                            self.speech.enqueueSentence(feedback)
+                            if tool.contains("search") || tool.contains("web") || tool.contains("browser") {
+                                self.speech.enqueueSentence("Ich schaue im Web nach.")
+                            }
                         }
                     }
                 }

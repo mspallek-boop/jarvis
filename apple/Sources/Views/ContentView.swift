@@ -154,6 +154,9 @@ struct ContentView: View {
     }
 
     private var voiceLabel: String {
+        // The mute has to be visible where the user is looking, or a dead
+        // microphone reads as a broken app.
+        if model.speech.microphoneMuted { return "Mikrofon stumm" }
         if model.speech.isSpeaking { return "Tippen zum Unterbrechen" }
         if model.isWorking || !model.runs.isEmpty { return activitySummary }
         if model.speech.isListening { return "Ich höre zu" }
@@ -272,13 +275,16 @@ struct ContentView: View {
                 .frame(width: 5, height: 5)
                 .accessibilityLabel(model.connection.label)
             Spacer()
-            Button { model.speaksReplies.toggle() } label: {
-                Image(systemName: model.speaksReplies ? "speaker.wave.2" : "speaker.slash.fill")
+            // Mutes the *microphone*, not JARVIS — the point is to talk to
+            // someone else without being listened to. Whether JARVIS reads
+            // answers aloud is a different thing and lives in the settings.
+            Button { model.speech.setMicrophoneMuted(!model.speech.microphoneMuted) } label: {
+                Image(systemName: model.speech.microphoneMuted ? "mic.slash.fill" : "mic")
                     .frame(width: 34, height: 34)
-                    .background(Circle().fill(ink.opacity(model.speaksReplies ? 0.08 : 0.20)))
+                    .background(Circle().fill(ink.opacity(model.speech.microphoneMuted ? 0.20 : 0.08)))
             }
-            .accessibilityLabel(model.speaksReplies ? "JARVIS stummschalten" : "Sprachausgabe einschalten")
-            .help(model.speaksReplies ? "JARVIS stummschalten" : "Sprachausgabe einschalten")
+            .accessibilityLabel(model.speech.microphoneMuted ? "Mikrofon einschalten" : "Mikrofon stummschalten")
+            .help(model.speech.microphoneMuted ? "Mikrofon einschalten" : "Mikrofon stummschalten")
             Menu {
                 Picker("Sprechtempo", selection: Binding(
                     get: { model.speech.playbackSpeed },

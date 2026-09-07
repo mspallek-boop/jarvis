@@ -27,6 +27,12 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     ]
 
     @Published private(set) var isSpeaking = false
+    /// Hard mute for the microphone, so the user can talk to someone else
+    /// without JARVIS listening in. Every path that opens the microphone goes
+    /// through `start(stoppingSpeech:)`, so gating it there is what makes this
+    /// airtight — barge-in, the idle restart and `listenThrough()` all obey it
+    /// without needing their own check.
+    @Published private(set) var microphoneMuted = UserDefaults.standard.bool(forKey: "microphoneMuted")
     var onUtterance: ((String) -> Void)?
     var onSpeechFinished: (() -> Void)?
     private static var permissionRequest: Task<Bool, Never>?
@@ -143,7 +149,17 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         return nil
     }
 
+    /// Mute or unmute the microphone. Muting closes the capture immediately —
+    /// a mute that only takes effect at the next turn is not a mute.
+    func setMicrophoneMuted(_ muted: Bool) {
+        guard muted != microphoneMuted else { return }
+        microphoneMuted = muted
+        UserDefaults.standard.set(muted, forKey: "microphoneMuted")
+        if muted { finishAudio() }
+    }
+
     func start(stoppingSpeech: Bool = true) async {
+        guard !microphoneMuted else { return }
         guard !isListening, !isStarting else { return }
         isStarting = true
         let id = UUID()
