@@ -542,6 +542,57 @@ def resolve_piper_voice(requested: str, configured: str) -> str:
     return str(candidate)
 
 
+MACOS_VOICE_PREFIX = "macos:"
+
+
+@functools.lru_cache(maxsize=1)
+def macos_voices() -> list[dict]:
+    """The German voices macOS itself has installed.
+
+    Apple's Premium voices (Markus, Yannick, Petra — a few hundred MB each,
+    free in System Settings) are markedly better than the compact ones that
+    ship by default, and better than Piper for German. Offering them costs
+    nothing: `say` is already the last-resort path, so this only makes it
+    choosable.
+    """
+    try:
+        listing = subprocess.run(["say", "-v", "?"], capture_output=True, timeout=10,
+                                 check=True, text=True).stdout
+    except (subprocess.SubprocessError, OSError):
+        return []
+    # Premium downloads are hundreds of MB of samples; the compact ones that
+    # ship with macOS are the ones that sound like 2005. Names alone cannot
+    # tell them apart, so the known Premium set is listed explicitly.
+    premium = {"markus", "yannick", "petra", "anna premium"}
+    voices = []
+    for line in listing.splitlines():
+        parts = line.split()
+        for index, token in enumerate(parts):
+            if not token.startswith("de_"):
+                continue
+            name = " ".join(parts[:index])
+            plain = name.split(" (")[0]
+            voices.append({
+                "id": MACOS_VOICE_PREFIX + plain,
+                "name": plain,
+                "accent": "german",
+                "gender": "",
+                "description": "Premium" if plain.lower() in premium else "Standard",
+            })
+            break
+    # Premium first: they are the reason this group is worth showing.
+    voices.sort(key=lambda v: (v["description"] != "Premium", v["name"]))
+    return voices
+
+
+def resolve_macos_voice(requested: str) -> str:
+    """The voice name behind a `macos:` id, if macOS really has it."""
+    name = requested[len(MACOS_VOICE_PREFIX):].strip()
+    if not name or not any(v["id"] == MACOS_VOICE_PREFIX + name for v in macos_voices()):
+        raise ValueError("Unbekannte Stimme")
+    return name
+
+
 def piper_voices(model_path: str) -> list[dict]:
     """The Piper models sitting next to the configured one.
 
@@ -1506,6 +1557,18 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 "voices": piper_voices(model),
                 "selected": model,
             }]
+            system = macos_voices()
+            if system:
+                groups.append({
+                    "id": "macos",
+                    "title": "macOS-Stimmen",
+                    "note": "Apples Premium-Stimmen (Markus, Yannick, Petra) sind ein "
+                            "kostenloser Download in den Systemeinstellungen und deutlich "
+                            "besser als die mitgelieferten Kompakt-Stimmen.",
+                    "deprecated": False,
+                    "voices": system,
+                    "selected": "",
+                })
             cloud = []
             error = ""
             if getattr(self.config, "elevenlabs_key", ""):
@@ -1595,6 +1658,21 @@ class JarvisHandler(BaseHTTPRequestHandler):
         # A Piper voice is a model path inside the voices directory; an
         # ElevenLabs one is an id. Which of the two arrived decides the route.
         piper_voice = ""
+        if requested_voice.startswith(MACOS_VOICE_PREFIX):
+            try:
+                name = resolve_macos_voice(requested_voice)
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            try:
+                frames = _macos_speech_frames(text, name)
+                first = next(iter(frames))
+            except Exception:
+                self._json(503, {"error": "Systemstimme nicht verfügbar"})
+                return
+            self._stream_speech_frames(
+                _encoded_frames(itertools.chain([first], frames)), "macos")
+            return
         if requested_voice.endswith(".onnx"):
             try:
                 piper_voice = resolve_piper_voice(

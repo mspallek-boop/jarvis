@@ -351,3 +351,45 @@ def test_the_voice_list_groups_local_and_cloud(tmp_path, monkeypatch):
 
 def test_piper_voices_survives_a_missing_directory():
     assert bridge.piper_voices('/nope/does-not-exist/model.onnx') == []
+
+
+# ------------------------------------------------------ macOS system voices
+
+def test_a_macos_voice_can_be_chosen(monkeypatch):
+    monkeypatch.setattr(bridge, 'macos_voices', lambda: [
+        {'id': 'macos:Yannick', 'name': 'Yannick', 'accent': 'german',
+         'gender': '', 'description': 'Premium'}])
+    used = []
+    monkeypatch.setattr(bridge, '_macos_speech_frames',
+                        lambda text, voice='': used.append(voice) or
+                        iter([{'type': 'audio', 'sample_rate': 24000,
+                               'format': 'pcm_s16le', 'data': 'AAA='}, {'type': 'done'}]))
+    status, head, _ = call_full({'text': 'Hallo', 'voice_id': 'macos:Yannick'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: macos' in head
+    assert used == ['Yannick']
+
+
+def test_a_macos_voice_that_is_not_installed_is_refused(monkeypatch):
+    """The name reaches `say -v`; an unchecked one is an argument we invented."""
+    monkeypatch.setattr(bridge, 'macos_voices', lambda: [])
+    status, _, content = call_full({'text': 'Hallo', 'voice_id': 'macos:Nichtda'})
+    assert status == 400
+    assert b'Unbekannte Stimme' in content
+
+
+def test_premium_voices_are_listed_first(monkeypatch):
+    listing = ("Anna                de_DE    # Hallo!\n"
+               "Yannick             de_DE    # Hallo!\n"
+               "Samantha            en_US    # Hi!\n")
+    monkeypatch.setattr(bridge.subprocess, 'run',
+                        lambda *a, **k: SimpleNamespace(stdout=listing))
+    bridge.macos_voices.cache_clear()
+    try:
+        voices = bridge.macos_voices()
+    finally:
+        bridge.macos_voices.cache_clear()
+    assert [v['name'] for v in voices] == ['Yannick', 'Anna']   # Premium first
+    assert voices[0]['description'] == 'Premium'
+    assert all(v['accent'] == 'german' for v in voices)         # en_US excluded
+    assert all(v['id'].startswith('macos:') for v in voices)
