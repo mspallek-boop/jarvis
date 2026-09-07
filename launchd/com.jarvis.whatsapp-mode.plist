@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.whatsapp-mode</string>
+    <!-- Enforces the timer on `jarvis-whatsapp-mode.py on --for 2h`. Without a
+         job like this, "an bis 18 Uhr" quietly means "an forever" the first
+         time someone closes the laptop. Runs from ~/.hermes/services because a
+         launchd agent has no TCC access to ~/Documents. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/marlon/.local/bin/python3.11</string>
+        <string>/Users/marlon/.hermes/services/jarvis-whatsapp-mode.py</string>
+        <string>enforce</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-whatsapp-mode.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-whatsapp-mode.error.log</string>
+</dict>
+</plist>

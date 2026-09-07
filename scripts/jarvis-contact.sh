@@ -2,11 +2,16 @@
 # Resolve a contact name to WhatsApp chat ids, from the macOS Contacts store.
 #
 #   scripts/jarvis-contact.sh rici
+#   scripts/jarvis-contact.sh +49 170 1234567     # a number the user dictated
 #
 # JARVIS calls this when the user names a person ("schreib rici") instead of a
 # number. Prints one line per matching phone number:
 #
 #   Riccardo Mayer | +43 660 1234567 | 436601234567@s.whatsapp.net
+#
+# Given a number rather than a name it converts that number to a chat id and
+# reverse-looks-up whoever it is stored as, so JARVIS can name the recipient in
+# its confirmation instead of reading digits back.
 #
 # Read-only. Opens the databases immutable so a running Contacts.app is never
 # disturbed. Prints nothing but matches — it is a lookup, not a dump, so a typo
@@ -15,9 +20,17 @@ set -euo pipefail
 
 CACHE="${HOME}/.hermes/contacts.cache.tsv"
 
+# Country code for numbers stored without one ("0170..."). Only 37 of ~855
+# stored numbers are in that form, so this is a tie-break, not a policy: it
+# defaults to the country of the owner's own WhatsApp account (+49) and any
+# line resolved this way says so, because a wrong guess sends a message to a
+# stranger. Override with JARVIS_DEFAULT_COUNTRY=43.
+DEFAULT_COUNTRY="${JARVIS_DEFAULT_COUNTRY:-49}"
+
 QUERY="${*:-}"
 if [[ -z "${QUERY}" ]]; then
   print -u2 "usage: jarvis-contact.sh <name>            # Kontakt suchen"
+  print -u2 "       jarvis-contact.sh +49 170 1234567   # Nummer -> Chat-ID"
   print -u2 "       jarvis-contact.sh --refresh         # Cache neu aufbauen"
   exit 2
 fi
@@ -36,7 +49,7 @@ normalise() {
   case "${d}" in
     +*)  d="${d#+}" ;;
     00*) d="${d#00}" ;;
-    0*)  d="43${d#0}" ;;   # local number: assume Austria (+43)
+    0*)  d="${DEFAULT_COUNTRY}${d#0}" ;;   # no country code stored
   esac
   print -r -- "${d}"
 }
@@ -79,6 +92,31 @@ if [[ "${QUERY}" == "--refresh" ]]; then
   exit 0
 fi
 
+# A number, not a name. "+49 170 123 45 67", "0049...", "0170..." and a bare
+# "49170..." all mean the same chat. Resolve it directly instead of hunting the
+# address book for a contact called "+49" — that lookup can only ever fail, and
+# failing sent JARVIS back to the user for a number they had just given it.
+DIGITS_ONLY="${QUERY//[^0-9]/}"
+if [[ "${QUERY}" == [+0-9]* && "${QUERY//[0-9 +\/()·.-]/}" == "" && ${#DIGITS_ONLY} -ge 6 ]]; then
+  NUM=$(normalise "${QUERY//[ \/()·.-]/}")
+  if [[ ${#NUM} -lt 8 || ${#NUM} -gt 15 ]]; then
+    print -u2 "Das sieht nicht nach einer vollständigen Telefonnummer aus: ${QUERY}"
+    exit 2
+  fi
+  # Name the recipient if we know them. Confirming "an Riccardo Mayer" is a far
+  # better check against a mistyped digit than reading the number back.
+  NAME=""
+  if [[ -r "${CACHE}" ]]; then
+    # A stored-but-unnamed number is not an unknown one — say which it is.
+    NAME=$(/usr/bin/awk -F'\t' -v n="${NUM}" '$4 == n {
+      name = ($1 != "" ? $1 : $2); print (name != "" ? name : "(gespeichert, ohne Namen)"); exit }' "${CACHE}")
+  fi
+  ASSUMED=""
+  [[ "${QUERY}" == 0* && "${QUERY}" != 00* ]] && ASSUMED=" (Ländervorwahl +${DEFAULT_COUNTRY} angenommen)"
+  printf '%s | +%s | %s@s.whatsapp.net%s\n' "${NAME:-(nicht in Kontakten)}" "${NUM}" "${NUM}" "${ASSUMED}"
+  exit 0
+fi
+
 # SQL-escape single quotes in the needle.
 NEEDLE="${QUERY//\'/\'\'}"
 
@@ -118,7 +156,7 @@ for DB in "${DBS[@]}"; do
     case "${DIGITS}" in
       +*)   DIGITS="${DIGITS#+}" ;;
       00*)  DIGITS="${DIGITS#00}" ;;
-      0*)   DIGITS="43${DIGITS#0}" ;;   # local number: assume Austria (+43)
+      0*)   DIGITS="${DEFAULT_COUNTRY}${DIGITS#0}" ;;   # no country code stored
     esac
     printf '%s | %s | %s@s.whatsapp.net\n' "${NAME:-(ohne Namen)}" "${NUMBER}" "${DIGITS}"
     FOUND=1

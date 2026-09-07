@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.whatsapp-watch</string>
+    <!-- Runs from ~/.hermes/services, not from the repo: a launchd agent has no
+         TCC access to ~/Documents and fails with "Operation not permitted".
+         Same deployment path as the bridge — edit in the repo, then copy. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/marlon/.local/bin/python3.11</string>
+        <string>/Users/marlon/.hermes/services/jarvis-whatsapp-watch.py</string>
+        <string>poll</string>
+    </array>
+    <!-- Half a minute is quiet enough to be invisible and quick enough that a
+         reply still feels like news. The job reads a log file and exits. -->
+    <key>StartInterval</key>
+    <integer>30</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-whatsapp-watch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-whatsapp-watch.error.log</string>
+</dict>
+</plist>
