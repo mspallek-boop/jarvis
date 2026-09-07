@@ -97,36 +97,61 @@ bereits ein Turn läuft **und** der User eine neue Aufgabe schickt statt einer
 Rückfrage — im Zweifel ohne Flag, denn Warten ist reparabel, ein verlorener
 Kontext nicht. Vier Spuren sind das Maximum, danach wird gewartet.
 
-### Darstellung
+### Darstellung — Blobs, nicht eine Liste
 
-Die vorhandene Aktivitätszeile (`ProgressView` + `activityLabel`) bleibt der
-einzige Ort. Sie bekommt drei Zustände statt zwei:
+**Korrektur vom 2026-09-07.** Die erste Fassung schlug eine aufklappbare
+Statuszeile vor. Der User will etwas anderes, und es ist besser: **kleine Blobs,
+die zeigen, dass mehrere Aufgaben laufen. Der, den man antippt, wird zentriert.**
+Was Codex bereits gebaut hat (`runsExpanded`, ForEach über `model.runs`), hat den
+Datenweg — die Darstellung wandert von der Zeile in den Raum um den Orb.
 
-| Läuft | Anzeige |
-|---|---|
-| 0 | nichts — wie heute |
-| 1 | `Ich denke nach` — **exakt wie heute**, keine Regression |
-| 2+ | `Ich suche im Web · +1` |
-
-Bei 2+ ist die Zeile antippbar und klappt **an Ort und Stelle** eine Liste auf,
-kein Sheet, kein Popover:
+Der Orb bleibt einer. Er ist die Aufgabe, auf die der User gerade schaut. Die
+anderen laufenden Aufgaben stehen als kleine Blobs daneben:
 
 ```
-Ich suche im Web · +1          ⌄
-  ── Web-Suche          0:41
-  ── wartet             0:03
+        ▫  ▫  ▫          ← laufende Aufgaben, klein, antippbar
+                          
+          ◼◼◼            ← der Orb: die zentrierte Aufgabe
+          ◼◼◼
+          ◼◼◼
+                          
+      Ich suche im Web    ← die Statuszeile, unverändert, gilt dem Orb
 ```
 
-Eine Zeile pro Turn: Phasenlabel, verstrichene Zeit, sonst nichts. Kein
-Fortschrittsbalken (es gibt keinen Fortschritt, nur Dauer). Keine
-Abbrechen-Knöpfe in der Liste — Abbrechen bleibt der eine Orb-Tap für den
-Vordergrund-Turn; alles andere ist ein Task-Manager, und den wollte niemand.
+Regeln:
 
-Die Zeit läuft nur, während die Zeile aufgeklappt ist. Ein sekündlich
-neuzeichnendes Label in einer eingeklappten Ansicht ist Batterie ohne Nutzen.
+- **Bei 0 oder 1 Aufgabe gibt es keine Blobs.** Die Ansicht ist dann pixelgleich
+  mit heute. Der Prüfstein aus Abschnitt 2 gilt unverändert.
+- **Ein Blob ist ein kleiner Orb**, gebaut aus derselben `CubeGrid`- und
+  `BauhausTileShape`-Formensprache, die `OrbView.swift` schon hat. Keine neuen
+  Symbole, keine Icons, keine Farben — die App bekommt kein zweites
+  Formenvokabular.
+- **Antippen zentriert.** Der Blob wandert auf die Orb-Position, der bisher
+  zentrierte Orb wird zum Blob. `matchedGeometryEffect` über den vorhandenen
+  `thinkingOrbNamespace` macht genau diese Bewegung — die Maschinerie liegt
+  schon da, sie braucht nur eine `id` pro `client_run_id` statt der festen
+  `"thinking-orb"`.
+- **Zentriert heißt fokussiert.** Statuszeile, gestreamte Antwort und der
+  Orb-Tap zum Abbrechen gelten immer der zentrierten Aufgabe. Genau deshalb
+  braucht es keine Abbrechen-Knöpfe an den Blobs.
+- **Keine Beschriftung an den Blobs.** Kein Text, keine Zahl, kein Tooltip. Was
+  eine Aufgabe tut, erfährt man durch Antippen — die Statuszeile sagt es dann.
+- **Der Zustand liegt in der Bewegung, nicht in der Farbe.** `thinking`,
+  `answering` und `tool` pulsieren wie der Orb, nur kleiner und langsamer;
+  `queued` steht still; `stopping` verblasst. Wer die App im Augenwinkel sieht,
+  erkennt daran, ob etwas hakt.
+- **Blobs verschwinden, wenn ihre Aufgabe fertig ist** — sie schrumpfen weg,
+  nicht schlagartig. Fällt der zentrierte Orb weg, rückt der älteste Blob nach.
+- **Höchstens vier**, passend zu `MAX_PARALLEL_CONVERSATIONS`. Mehr kann die
+  Bridge nicht gleichzeitig laufen lassen, also kann es nie mehr geben.
 
-`+1` statt `2 Aufgaben`, weil die vordere Aufgabe die ist, auf die der User
-wartet. Die Zahl ist eine Fußnote, keine Überschrift.
+Größe und Abstand sind deine Entscheidung; als Anhalt: ein Blob etwa ein Viertel
+des Orbs, waagerecht über ihm mit gleichmäßigem Abstand, ausreichend Trefferfläche
+für den Finger auch wenn er optisch klein ist.
+
+Was das ersetzt: die aufklappbare Liste, das `⌄`-Chevron und das `· +1` am Ende
+der Statuszeile. Die Statuszeile bleibt einzeilig und gilt der zentrierten
+Aufgabe.
 
 ---
 
@@ -202,8 +227,11 @@ Sprachausgabe, die zwei Minuten zu spät kommt, ist verwirrend, nicht hilfreich.
 ## 5. Was ausdrücklich nicht gebaut wird
 
 - Kein Glocken-Icon, keine Badge-Zahl, kein Notification-Center.
-- Keine Tab-Leiste, keine Sidebar, kein zweiter Orb.
-- Keine Abbrechen-Knöpfe pro Aufgabe.
+- Keine Tab-Leiste, keine Sidebar. Genau ein zentrierter Orb — die Blobs sind
+  die *anderen* Aufgaben, nie ein zweiter gleichrangiger Orb.
+- Keine Abbrechen-Knöpfe pro Aufgabe, keine Beschriftung an den Blobs.
+- Keine Liste, kein Chevron, kein "· +1" in der Statuszeile. Das war der erste
+  Entwurf und ist durch die Blobs ersetzt.
 - Kein Wischen zum Verwerfen, keine Benachrichtigungs-Einstellungen. Wer keine
   Benachrichtigungen will, lässt JARVIS keinen Watch setzen.
 - Keine Ungelesen-Zahl irgendwo. Der Verlauf ist der Posteingang.
@@ -225,7 +253,10 @@ deine:
   Einzelaufgabe bleibt der Sonderfall `runs.count == 1`.
 - `AppModel`: `notificationCursor` (persistiert) + der Poll an `checkConnection`.
 - `JarvisAPIClient`: `runs()`, `notifications(since:)`, `markRead(through:)`.
-- `ContentView`: Aktivitätszeile aufklappbar, Banner neben `connectionBanner`.
+- `ContentView`: Blobs um den Orb, `matchedGeometryEffect` mit einer id je
+  `client_run_id` statt der festen `"thinking-orb"`; Banner neben
+  `connectionBanner`.
+- `OrbView`: eine kleine Variante derselben `CubeGrid`-Formensprache als Blob.
 - `MessageBubble`: `system`-Zweig ohne Bubble.
 
 Wenn dir eine dieser Grenzen im Weg steht oder du die Bridge anders brauchst —
@@ -242,3 +273,31 @@ schnell geändert. Änderungen an `bridge/` bitte nicht selbst vornehmen.
   /notifications` liefert `{"id":1,"kind":"whatsapp_reply","title":"Rici"}`,
   `unread: 1`; `POST /notifications/read {"through":1}` → `unread: 0`.
 - 105 Bridge-Tests grün, davon 11 neu für die Benachrichtigungen.
+
+
+---
+
+## 8. Nachtrag vom 2026-09-07 — bereits erledigt, nicht doppelt bauen
+
+Zwei Dinge habe ich auf ausdrückliche Anweisung des Users direkt in `apple/`
+geändert, obwohl der Ordner dir gehört. Beides ist einzeilig und gebaut:
+
+**Der Mute-Knopf mutet jetzt das Mikrofon, nicht JARVIS.** Er hing an
+`speaksReplies`, schaltete also die Sprachausgabe stumm — der User erwartet, sein
+*Mikrofon* stummzuschalten, um mit anderen Menschen zu reden, ohne dass JARVIS
+mithört. Das war kein Bug, sondern die falsche Funktion hinter dem Symbol.
+`SpeechController.microphoneMuted` (persistiert) sperrt jetzt
+`start(stoppingSpeech:)` — der eine Ort, durch den jeder Weg zum Mikrofon läuft,
+also gelten Barge-in, Idle-Neustart und `listenThrough()` automatisch mit. Das
+Symbol ist `mic` / `mic.slash.fill`, die Orb-Zeile sagt "Mikrofon stumm".
+`speaksReplies` bleibt unverändert in den Einstellungen als "Antworten vorlesen".
+
+**"Ich prüfe das" ist raus.** Der gesprochene Füller beim Tool-Start sagte im
+generischen Fall "Ich prüfe das" — das teilt nichts mit, kostet einen
+gesprochenen Satz und verzögert die Antwort. Jetzt wird nur noch bei einer
+Websuche etwas gesagt, weil die Wartezeit sonst unerklärt bleibt. Die Regel steht
+zusätzlich in der SOUL, damit auch das Modell die Formulierung nicht selbst
+produziert.
+
+Beides ist für macOS und iOS gebaut, signiert und auf Mac, iPhone und Watch
+installiert.

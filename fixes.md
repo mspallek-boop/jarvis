@@ -4,22 +4,35 @@ Stand: 2026-09-07. Bridge auf `127.0.0.1:8770` neu deployt und verifiziert.
 
 ## Erledigt
 
-### 1. ElevenLabs-Guthaben aufgebraucht → lokale Stimme
-Der Account läuft auf dem Free-Tier und ist bei 10.000/10.000 Zeichen.
-ElevenLabs antwortet seither auf **jede** Anfrage mit HTTP 401, die Bridge
-machte daraus 503 — JARVIS war schlicht stumm. Beide Sprachwege fallen jetzt
-auf die eingebaute macOS-Stimme zurück (`bridge/jarvis_bridge.py` für die App,
-`server/server.py` für HUD und Voice-Pipeline), bei 401/402/429, fehlendem
-Schlüssel und auch wenn der neuronale Worker auf `:8788` nicht läuft.
-Das Audioformat bleibt identisch, die App braucht keine Änderung.
-Abschaltbar mit `JARVIS_TTS_FALLBACK=""`, Stimme wählbar mit
-`JARVIS_TTS_MACOS_VOICE`.
+### 1. Stimme — Piper statt ElevenLabs
+Der ElevenLabs-Account ist Free-Tier und bei 10.000/10.000 Zeichen; er antwortet
+auf jede Anfrage mit HTTP 401. Der erste Fix fiel auf die macOS-Stimme "Anna"
+zurück — die ist eine der alten Kompakt-Stimmen und klingt zu Recht schrecklich.
 
-*Besser wird es sofort mit einer Premium-Stimme:* Systemeinstellungen →
-Bedienungshilfen → Gesprochene Inhalte → Systemstimme → Stimmen verwalten →
-eine deutsche Premium-Stimme laden, dann deren Namen in
-`JARVIS_TTS_MACOS_VOICE` eintragen. Aktuell installiert ist nur die
-Standardauswahl, JARVIS spricht daher mit "Anna".
+Jetzt läuft **Piper** mit der deutschen Stimme "Thorsten": lokales neuronales
+TTS, offline, kostenlos, kein Konto, kein Kontingent. Die Bridge streamt es im
+identischen Format wie vorher (24 kHz PCM), die App merkt nichts davon.
+
+- Umgebung: `~/.hermes/piper-venv`, Modell in `~/.hermes/piper-voices`
+  (109 MB, `de_DE-thorsten-high`).
+- Piper läuft mit 22,05 kHz, der Player der App akzeptiert nur 24 kHz — die
+  Bridge rechnet um, damit das Wire-Format ein einziger fester Vertrag bleibt
+  und eine neue Stimme nie eine Änderung im Swift-Client wird.
+- Reihenfolge: ElevenLabs (falls je wieder Guthaben) → Piper → macOS `say`.
+  Der Antwort-Header `X-JARVIS-Speech-Provider` sagt, wer geantwortet hat.
+- Andere Stimme: `JARVIS_PIPER_MODEL` auf ein anderes Modell zeigen lassen.
+  Verfügbar sind u. a. `de_DE-kerstin-low`, `de_DE-ramona-low`,
+  `de_DE-eva_k-x_low` und `de_DE-thorsten_emotional-medium`.
+
+Am laufenden Dienst verifiziert: HTTP 200, Provider `piper`, 4,17 s Audio.
+
+### 1b. Mute-Knopf — er machte das Falsche
+Kein Bug: der Knopf hing an `speaksReplies` und schaltete JARVIS' *Stimme* stumm.
+Gewollt war, das *Mikrofon* stummzuschalten, um mit anderen Menschen zu reden,
+ohne dass JARVIS mithört. Umgebaut auf `mic` / `mic.slash.fill`; die Sperre sitzt
+in `SpeechController.start()`, dem einen Ort, durch den jeder Weg zum Mikrofon
+läuft — Barge-in und Idle-Neustart gelten damit automatisch mit. "Antworten
+vorlesen" bleibt in den Einstellungen.
 
 ### 2. WhatsApp-Nummer im internationalen Format
 `scripts/jarvis-contact.sh` nahm nur Namen. Eine diktierte Nummer lief in die

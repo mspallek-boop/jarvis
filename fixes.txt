@@ -1,10 +1,10 @@
 Diese Liste ist nach fixes.md umgezogen — dort steht zu jedem Punkt der Stand
 vom 2026-09-07.
 
-[x] ElevenLabs-Guthaben aufgebraucht  -> lokale macOS-Stimme als Fallback, live
-[x] WhatsApp-Nummer im +49-Format     -> jarvis-contact.sh nimmt Nummern direkt
-[x] Multitasking / parallele Aufgaben -> Backend fertig (GET /runs), App: Codex
-[x] WhatsApp-Antwort im Auge behalten -> Mitteilung ~30s nach der Antwort, live
-[x] WhatsApp empfangen                -> Schalter mit Zeitlimit, standardmaessig aus
-[ ] WhatsApp-Anrufe                   -> nicht baubar, Baileys kann nur ablehnen
-[ ] Mute-Button                       -> nicht reproduzierbar, Rueckfragen in fixes.md
+[x] Stimme klingt schrecklich        -> Piper "Thorsten", lokal und neuronal, live
+[x] Mute-Button                      -> mutet jetzt das Mikrofon, nicht JARVIS
+[x] WhatsApp-Nummer im +49-Format    -> jarvis-contact.sh nimmt Nummern direkt
+[x] Multitasking / parallele Aufgaben -> parallel:true, Blobs sind bei Codex
+[x] WhatsApp-Antwort im Auge behalten -> Benachrichtigung in der App, live
+[x] WhatsApp empfangen               -> Schalter mit Zeitlimit, standardmaessig aus
+[ ] WhatsApp-Anrufe                  -> nicht baubar, Baileys kann nur ablehnen
