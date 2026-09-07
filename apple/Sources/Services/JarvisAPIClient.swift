@@ -185,10 +185,34 @@ struct JarvisAPIClient {
         }
     }
 
+    /// One heading in the voice picker. The bridge groups them because the two
+    /// are not peers: Piper is local, free and unlimited, while ElevenLabs is a
+    /// monthly allowance this account empties in days — which is what made
+    /// JARVIS mute in the first place.
+    struct VoiceGroup: Decodable, Identifiable {
+        let id: String
+        let title: String
+        let note: String
+        let deprecated: Bool
+        let voices: [BridgeVoice]
+        let selected: String
+        let error: String?
+    }
+
     struct VoicesResponse: Decodable {
         let provider: String
         let voices: [BridgeVoice]
         let selected: String
+        /// Absent when talking to a bridge from before the grouping existed.
+        let groups: [VoiceGroup]?
+
+        /// Grouped when the bridge offers it, otherwise the old flat list under
+        /// one heading, so an older Mac still shows something usable.
+        var displayGroups: [VoiceGroup] {
+            if let groups, !groups.isEmpty { return groups }
+            return [VoiceGroup(id: "legacy", title: "Stimmen", note: "", deprecated: false,
+                               voices: voices, selected: selected, error: nil)]
+        }
     }
 
     let baseURL: URL
@@ -310,8 +334,10 @@ struct JarvisAPIClient {
         return try JSONDecoder().decode(UploadResponse.self, from: data)
     }
 
+    /// `parallel` lets a turn start while another is still running, in a side
+    /// lane the bridge opens. Without it the second turn waits for the first.
     func chatStreaming(message: String, conversation: String, clientRunID: String,
-                       imagePath: String = "",
+                       imagePath: String = "", parallel: Bool = false,
                        onFrame: (ChatFrame) -> Void) async throws -> ChatResponse {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/stream"))
         request.httpMethod = "POST"
@@ -319,9 +345,11 @@ struct JarvisAPIClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/x-ndjson", forHTTPHeaderField: "Accept")
-        var body = ["message": message, "conversation": conversation, "client_run_id": clientRunID]
+        var body: [String: Any] = ["message": message, "conversation": conversation,
+                                   "client_run_id": clientRunID]
         if !imagePath.isEmpty { body["image_path"] = imagePath }
-        request.httpBody = try JSONEncoder().encode(body)
+        if parallel { body["parallel"] = true }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw ClientError.emptyResponse }
         if http.statusCode == 404 || http.statusCode == 405 {

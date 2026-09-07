@@ -189,11 +189,45 @@ final class AppModel: ObservableObject {
     ]
     @Published private(set) var conversations: [ChatConversation] = []
     @Published var input = ""
-    @Published var isWorking = false
-    @Published private(set) var activityLabel = "Ich denke nach"
+    /// One task the app is running right now. There used to be a single slot —
+    /// `activeRunID` plus one `liveResponse` — so starting a second task
+    /// silently orphaned the first: its frames were dropped by an identity
+    /// guard and its answer never arrived. That is what "he forgets everything
+    /// as soon as I give him a new task" was.
+    struct LocalRun: Identifiable {
+        let id: String
+        let prompt: String
+        let startedAt: Date
+        var liveResponse = ""
+        var activityLabel = "Ich denke nach"
+    }
+
+    /// Running tasks, oldest first. Empty means idle.
+    @Published private(set) var localRuns: [LocalRun] = []
+    /// The task the user is looking at: its answer streams into the view and
+    /// the orb tap cancels it. Tapping another blob focuses that one instead.
+    @Published var focusedRunID: String?
     @Published private(set) var runs: [JarvisAPIClient.RunStatus] = []
     @Published private(set) var notificationBanner: String?
-    @Published private(set) var liveResponse = ""
+
+    var isWorking: Bool { !localRuns.isEmpty }
+    private var focusedRun: LocalRun? {
+        localRuns.first { $0.id == focusedRunID } ?? localRuns.first
+    }
+    var activityLabel: String { focusedRun?.activityLabel ?? "Ich denke nach" }
+    var liveResponse: String { focusedRun?.liveResponse ?? "" }
+
+    private func updateRun(_ id: String, _ change: (inout LocalRun) -> Void) {
+        guard let index = localRuns.firstIndex(where: { $0.id == id }) else { return }
+        change(&localRuns[index])
+    }
+
+    private func finishRun(_ id: String) {
+        localRuns.removeAll { $0.id == id }
+        chatTasks[id]?.cancel()
+        chatTasks[id] = nil
+        if focusedRunID == id { focusedRunID = localRuns.first?.id }
+    }
     @Published var connection: ConnectionState = .unchecked
     @Published var showingSettings = false
     @Published var serverURL: String
@@ -223,8 +257,9 @@ final class AppModel: ObservableObject {
     /// Voices the Mac's speech provider offers. Fetched through the bridge so
     /// the provider API key never reaches the app.
     @Published private(set) var availableBridgeVoices: [JarvisAPIClient.BridgeVoice] = []
+    @Published private(set) var voiceGroups: [JarvisAPIClient.VoiceGroup] = []
     @Published private(set) var voiceListError: String?
-    @Published var selectedBridgeVoice: String = UserDefaults.standard.string(forKey: "selectedBridgeVoice") ?? "" {
+    @Published var selectedBridgeVoice: String = "" {
         didSet { UserDefaults.standard.set(selectedBridgeVoice, forKey: "selectedBridgeVoice") }
     }
 
@@ -251,7 +286,7 @@ final class AppModel: ObservableObject {
     /// Nothing to send without either words or a picture.
     var cannotSend: Bool {
         (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingImagePath.isEmpty)
-            || isWorking || isUploadingImage
+            || isUploadingImage
     }
 
     /// Pulls the first usable picture out of a paste and uploads it.
@@ -303,22 +338,23 @@ final class AppModel: ObservableObject {
         guard !token.isEmpty else { return }
         do {
             let response = try await makeClient().voices()
-            availableBridgeVoices = response.voices
-            voiceListError = response.voices.isEmpty
-                ? "Der Mac nutzt gerade keine Anbieter-Stimme."
+            voiceGroups = response.displayGroups
+            availableBridgeVoices = voiceGroups.flatMap(\.voices)
+            voiceListError = availableBridgeVoices.isEmpty
+                ? "Keine Stimmen verfügbar. Läuft Piper auf dem Mac?"
                 : nil
             // A voice removed on the Mac must not stay selected here.
             if !selectedBridgeVoice.isEmpty,
-               !response.voices.contains(where: { $0.id == selectedBridgeVoice }) {
+               !availableBridgeVoices.contains(where: { $0.id == selectedBridgeVoice }) {
                 selectedBridgeVoice = ""
             }
         } catch {
+            voiceGroups = []
             availableBridgeVoices = []
             voiceListError = error.localizedDescription
         }
     }
-    private var activeRunID: String?
-    private var chatTask: Task<JarvisAPIClient.ChatResponse, Error>?
+    private var chatTasks: [String: Task<JarvisAPIClient.ChatResponse, Error>] = [:]
     private var statusPollTask: Task<Void, Never>?
     private var bannerTask: Task<Void, Never>?
     private var notificationCursor: Int {
@@ -332,6 +368,9 @@ final class AppModel: ObservableObject {
 #endif
 
     init() {
+        // The app no longer sends provider voice IDs. Forget a previously
+        // selected ElevenLabs voice so an offline launch cannot reuse it.
+        UserDefaults.standard.removeObject(forKey: "selectedBridgeVoice")
         let storedURL = UserDefaults.standard.string(forKey: "serverURL")
         if Self.shouldMigrateServerURL(storedURL) {
             serverURL = Self.defaultServerURL
@@ -355,9 +394,10 @@ final class AppModel: ObservableObject {
         speech.onUtterance = { [weak self] text in
             guard let self, self.voiceModeEnabled, self.voiceForeground else { return }
             Task {
-                // Barge-in delivers speech while the previous turn still runs.
-                // send() ignores input while isWorking, so end that turn first.
-                if self.isWorking { await self.cancelActiveRun(announcing: false) }
+                // Speaking while a turn runs used to cancel it. A new task is
+                // not a correction: it is added and both run. Cancelling is the
+                // orb tap, which is explicit and reversible in a way that
+                // losing minutes of work is not.
                 await self.send(text)
             }
         }
@@ -669,12 +709,15 @@ final class AppModel: ObservableObject {
 
     func send(_ explicitText: String? = nil) async {
         let text = (explicitText ?? input).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (!text.isEmpty || !pendingImagePath.isEmpty), !isWorking, !isUploadingImage else { return }
+        guard (!text.isEmpty || !pendingImagePath.isEmpty), !isUploadingImage else { return }
         let message = text.isEmpty ? "Was ist auf diesem Bild zu sehen?" : text
+        // Something already running means this is a second task, so it gets a
+        // lane of its own instead of queueing behind the first.
+        let runsInParallel = !localRuns.isEmpty
         if speech.interruptsBySpeaking && voiceModeEnabled && voiceForeground {
             // Keep hearing the user through thinking and speaking alike.
             await speech.listenThrough()
-        } else {
+        } else if !runsInParallel {
             speech.suspend()
         }
         input = ""
@@ -685,13 +728,15 @@ final class AppModel: ObservableObject {
         // question.
         let attachedImage = pendingImagePath
         discardPendingImage()
-        isWorking = true
         let id = UUID().uuidString
-        activeRunID = id
-        activityLabel = "Ich denke nach"
-        liveResponse = ""
+        localRuns.append(LocalRun(id: id, prompt: message, startedAt: Date()))
+        // A new task is what the user just asked for, so it is what they are
+        // looking at. The older one keeps running and stays reachable.
+        focusedRunID = id
         var sentences = SpeechSentenceBuffer()
         var announcedTool = false
+        // Only the focused task may speak. Two answers read aloud at once are
+        // unintelligible, and the second one is not what the user is watching.
         let shouldSpeak = speaksReplies && voiceForeground
         do {
             let client = try makeClient()
@@ -699,18 +744,24 @@ final class AppModel: ObservableObject {
             let conversationID = conversation
             let pending = Task {
                 try await client.chatStreaming(message: message, conversation: conversationID,
-                                               clientRunID: id, imagePath: attachedImage) { [weak self] frame in
-                    guard let self, self.activeRunID == id else { return }
+                                               clientRunID: id, imagePath: attachedImage,
+                                               parallel: runsInParallel) { [weak self] frame in
+                    // Guard on this run still existing, never on it being the
+                    // active one — that identity check is what dropped the
+                    // first task's frames the moment a second one started.
+                    guard let self, self.localRuns.contains(where: { $0.id == id }) else { return }
+                    let isFocused = self.focusedRunID == id
                     if frame.type == "delta", let delta = frame.text {
-                        self.liveResponse += delta
-                        self.activityLabel = "Ich antworte"
+                        self.updateRun(id) { $0.liveResponse += delta; $0.activityLabel = "Ich antworte" }
                         let ready = sentences.append(delta)
-                        if shouldSpeak && self.speaksReplies && self.voiceForeground {
+                        if shouldSpeak && isFocused && self.speaksReplies && self.voiceForeground {
                             for sentence in ready { self.speech.enqueueSentence(sentence) }
                         }
                     } else if frame.type == "activity", let phase = frame.phase {
-                        self.activityLabel = JarvisAPIClient.Activity(phase: phase, tool: frame.tool ?? "").label
-                        if phase == "tool", !announcedTool, self.liveResponse.isEmpty,
+                        let label = JarvisAPIClient.Activity(phase: phase, tool: frame.tool ?? "").label
+                        self.updateRun(id) { $0.activityLabel = label }
+                        let quiet = self.localRuns.first { $0.id == id }?.liveResponse.isEmpty ?? true
+                        if phase == "tool", !announcedTool, quiet, isFocused,
                            shouldSpeak, self.speaksReplies, self.voiceForeground {
                             announcedTool = true
                             // Only say something that tells the user something.
@@ -726,61 +777,61 @@ final class AppModel: ObservableObject {
                     }
                 }
             }
-            chatTask = pending
+            chatTasks[id] = pending
             let response = try await pending.value
-            guard activeRunID == id else { return }
-            activeRunID = nil
-            chatTask = nil
-            isWorking = false
+            guard localRuns.contains(where: { $0.id == id }) else { return }
+            let wasFocused = focusedRunID == id
+            finishRun(id)
             let names = response.tools.map(\.name)
             appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names,
                                       attachments: response.messageAttachments))
             connection = .online
-            liveResponse = ""
-            if shouldSpeak && speaksReplies && voiceForeground {
+            if shouldSpeak && wasFocused && speaksReplies && voiceForeground {
                 for sentence in sentences.finish(finalText: response.text) { speech.enqueueSentence(sentence) }
                 speech.endStream()
-            } else {
+            } else if !isWorking {
                 speech.stopSpeaking()
                 await resumeVoice()
             }
         } catch {
-            guard activeRunID == id else { return }
-            activeRunID = nil
-            chatTask = nil
-            isWorking = false
-            speech.stopSpeaking()
-            liveResponse = ""
+            guard localRuns.contains(where: { $0.id == id }) else { return }
+            let wasFocused = focusedRunID == id
+            finishRun(id)
+            if wasFocused { speech.stopSpeaking() }
             lastError = error.localizedDescription
             connection = .offline(error.localizedDescription)
             appendMessage(ChatMessage(role: .system, text: error.localizedDescription))
         }
     }
 
-    /// Stops the running Hermes turn, not just the local URLSession request.
-    /// Barge-in reuses this: the user talking over the answer is a redirection,
-    /// so the turn ends silently rather than announcing a cancellation.
-    private func cancelActiveRun(announcing: Bool) async {
-        guard let id = activeRunID else { return }
+    /// Stops one Hermes turn, not just the local URLSession request.
+    /// Cancels the focused task only — the others were not what the user
+    /// pointed at, and stopping work nobody asked to stop is the failure this
+    /// whole change exists to remove.
+    func cancelRun(_ runID: String? = nil, announcing: Bool) async {
+        guard let id = runID ?? focusedRunID ?? localRuns.first?.id else { return }
         do {
             let client = try makeClient()
             try await client.stop(clientRunID: id)
-            guard activeRunID == id else { return }
-            activeRunID = nil
-            chatTask?.cancel()
-            chatTask = nil
-            isWorking = false
-            liveResponse = ""
+            guard localRuns.contains(where: { $0.id == id }) else { return }
+            finishRun(id)
             if announcing {
                 appendMessage(ChatMessage(role: .system, text: "Anfrage abgebrochen."))
             }
         } catch { lastError = error.localizedDescription }
     }
 
+    /// Bring another running task into view. The blobs call this.
+    func focusRun(_ runID: String) {
+        guard localRuns.contains(where: { $0.id == runID }) else { return }
+        speech.stopSpeaking()      // the old task's answer is no longer the one being read
+        focusedRunID = runID
+    }
+
     func toggleListening() async {
-        if isWorking, activeRunID != nil {
+        if isWorking {
             speech.suspend()
-            await cancelActiveRun(announcing: true)
+            await cancelRun(announcing: true)
             await resumeVoice()
         } else if speech.isSpeaking {
             speech.stopSpeaking()
