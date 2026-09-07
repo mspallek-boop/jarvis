@@ -34,14 +34,32 @@ struct SettingsView: View {
                     Text("Die Stimme kommt vom Sprachanbieter deines Macs. Fällt er aus, übernimmt die Systemstimme, damit die Antwort hörbar bleibt.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    // Grouped, and the cloud group says plainly that it is a
+                    // dead end: the monthly ElevenLabs allowance on this
+                    // account empties in days, which is what made JARVIS mute.
                     Picker("Stimme", selection: $model.selectedBridgeVoice) {
                         Text("Wie am Mac eingestellt").tag("")
-                        ForEach(model.availableBridgeVoices) { voice in
-                            Text(voice.label).tag(voice.id)
+                        ForEach(model.voiceGroups) { group in
+                            Section(group.deprecated ? "\(group.title) — veraltet" : group.title) {
+                                ForEach(group.voices) { voice in
+                                    Text(voice.label).tag(voice.id)
+                                }
+                            }
                         }
                     }
                     .pickerStyle(.menu)
-                    .disabled(model.availableBridgeVoices.isEmpty)
+                    ForEach(model.voiceGroups) { group in
+                        if !group.note.isEmpty {
+                            Text("\(group.title): \(group.note)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let problem = group.error, !problem.isEmpty {
+                            Text(problem)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     if let problem = model.voiceListError {
                         Text(problem)
                             .font(.caption)

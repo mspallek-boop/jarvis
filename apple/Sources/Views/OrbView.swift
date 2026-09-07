@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum BauhausTileStyle: CaseIterable {
+enum BauhausTileStyle: CaseIterable {
     case circle
     case semicircleTop
     case semicircleBottom
@@ -32,7 +32,7 @@ private enum BauhausTileStyle: CaseIterable {
     }
 }
 
-private struct BauhausTileShape: Shape {
+struct BauhausTileShape: Shape {
     let style: BauhausTileStyle
     var progress: CGFloat
 
@@ -278,5 +278,41 @@ struct OrbView: View {
 
     private var gridSize: CGFloat {
         size ?? (horizontalSizeClass == .compact ? 208 : 174)
+    }
+}
+
+
+/// A single task, as one tile of the orb's own language: a rounded square that
+/// morphs into one of the glyphs and back.
+///
+/// Not a small CubeGrid. A grid says "a JARVIS", and there is one JARVIS; a
+/// single tile says "a piece of what it is doing", which is what a running task
+/// is. It also stays legible at 34pt, where a five-by-five grid is mush.
+struct TaskBlobView: View {
+    var size: CGFloat = 34
+    var color: Color = .primary
+    /// Each blob gets its own glyph and its own phase, so a row of them reads
+    /// as several things happening rather than one thing repeated.
+    var seed: Int = 0
+
+    @State private var morphed = false
+
+    private var style: BauhausTileStyle {
+        let all = BauhausTileStyle.allCases
+        return all[abs(seed) % all.count]
+    }
+
+    var body: some View {
+        BauhausTileShape(style: style, progress: morphed ? 1 : 0)
+            .fill(color)
+            .frame(width: size, height: size)
+            .onAppear {
+                withAnimation(
+                    .easeInOut(duration: 1.6)
+                    .repeatForever(autoreverses: true)
+                    .delay(Double(abs(seed) % 5) * 0.24)
+                ) { morphed = true }
+            }
+            .accessibilityHidden(true)
     }
 }

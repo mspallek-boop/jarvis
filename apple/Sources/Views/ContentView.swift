@@ -201,9 +201,41 @@ struct ContentView: View {
         .padding(.vertical, 18)
     }
 
+    /// The other running tasks. The focused one is the big orb, so it is not
+    /// repeated here — with two tasks you see one blob, which is the honest
+    /// picture. A blob is a small OrbView, so the app gains no second visual
+    /// vocabulary, and tapping one centres it. One tile, not a grid: a grid
+    /// says "a JARVIS", and there is one of those.
+    private var taskBlobs: some View {
+        HStack(spacing: 14) {
+            ForEach(model.localRuns.filter { $0.id != model.focusedRunID }) { run in
+                Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
+                    TaskBlobView(size: 30, color: ink, seed: run.id.hashValue)
+                        .opacity(0.55)
+                        // Small on purpose, but never small to hit.
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .focusable(false)
+                #endif
+                .accessibilityLabel("Aufgabe anzeigen: \(run.prompt.prefix(60))")
+                .help(String(run.prompt.prefix(80)))
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .frame(height: model.localRuns.count > 1 ? 44 : 0)
+        .opacity(model.localRuns.count > 1 ? 1 : 0)
+        .allowsHitTesting(model.localRuns.count > 1)
+    }
+
     private var voiceStage: some View {
         VStack(spacing: 24) {
             Spacer(minLength: 20)
+            // Nothing is drawn while fewer than two tasks run, so an idle app
+            // looks exactly as it did before multitasking existed.
+            taskBlobs
             largeOrbButton
             Text(voiceLabel)
                 .font(model.appFont(.caption))
