@@ -224,3 +224,22 @@ Reihenfolge der Stimmen: ElevenLabs (nur mit Guthaben) → Piper → macOS `say`
 der Antwort-Header `X-JARVIS-Speech-Provider` sagt, wer tatsächlich gesprochen
 hat. Andere deutsche Stimmen listet `python -m piper.download_voices` ohne
 Argument, z. B. `de_DE-kerstin-low` oder `de_DE-thorsten_emotional-medium`.
+
+### Warmer Piper-Dienst
+
+`com.jarvis.piper` hält das Sprachmodell geladen und lauscht auf
+`127.0.0.1:8789`. Ohne ihn lädt die Bridge das 109-MB-Modell bei jedem Satz neu
+— rund eine Sekunde, jedes Mal.
+
+```bash
+cp scripts/jarvis-piper-server.py ~/.hermes/services/
+cp launchd/com.jarvis.piper.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jarvis.piper.plist
+curl -s http://127.0.0.1:8789/health     # {"ok": true, "warm": [...]}
+```
+
+Die Bridge nutzt ihn automatisch und fällt auf die CLI zurück, wenn er steht.
+
+**Wichtig für alle JARVIS-Dienste: `ProcessType` muss `Interactive` sein.**
+Mit `Background` drosselt macOS die CPU des Jobs, und Kindprozesse erben das —
+derselbe Satz brauchte 1,2 s im Terminal und 9,2 s über die gedrosselte Bridge.
