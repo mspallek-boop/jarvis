@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.piper</string>
+    <!-- Keeps the speech model loaded. Interactive, not Background: macOS
+         throttles a Background job and its children, and the same sentence
+         took 1.2s from a terminal against 9.2s through a throttled bridge.
+         Runs from ~/.hermes/services because launchd has no TCC access to
+         ~/Documents. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/marlon/.hermes/piper-venv/bin/python</string>
+        <string>/Users/marlon/.hermes/services/jarvis-piper-server.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardOutPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-piper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-piper.error.log</string>
+</dict>
+</plist>

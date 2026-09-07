@@ -553,16 +553,24 @@ def piper_voices(model_path: str) -> list[dict]:
         found = sorted(directory.glob("*.onnx"))
     except (OSError, ValueError):
         return []
+    # Same shape as the cloud voices — id, accent, gender, description — because
+    # the app decodes one type for both. A different shape here does not degrade
+    # gracefully: the whole list fails to decode and the picker comes up empty.
+    known_gender = {"thorsten": "male", "karlsson": "male", "pavoque": "male",
+                    "kerstin": "female", "eva_k": "female", "ramona": "female"}
     voices = []
     for path in found:
         stem = path.stem                       # de_DE-thorsten-high
         parts = stem.split("-")
-        name = parts[1].replace("_", " ").title() if len(parts) > 1 else stem
+        speaker = parts[1] if len(parts) > 1 else stem
         quality = parts[2] if len(parts) > 2 else ""
+        locale = parts[0] if parts else ""
         voices.append({
-            "voice_id": str(path),
-            "name": name if not quality else f"{name} ({quality})",
-            "language": parts[0] if parts else "",
+            "id": str(path),
+            "name": speaker.replace("_", " ").title(),
+            "accent": "german" if locale.startswith("de") else locale,
+            "gender": known_gender.get(speaker.split("_emotional")[0], ""),
+            "description": quality,
         })
     return voices
 
@@ -630,6 +638,49 @@ def _resample_to_24k(pcm: bytes, source_rate: int, state):
     if source_rate == 24_000:
         return pcm, state
     return audioop.ratecv(pcm, 2, 1, source_rate, 24_000, state)
+
+
+PIPER_SERVER_URL = os.environ.get("JARVIS_PIPER_URL", "http://127.0.0.1:8789/speech")
+
+
+def _warm_piper_frames(text: str, model: str, token: str) -> Iterator[dict]:
+    """The Piper that stays loaded, via its loopback service.
+
+    Spawning the CLI reloads a 109 MB model for every sentence — about a second
+    each time, which is what made a conversation feel like a telegram. This
+    keeps the same framing so the caller cannot tell the difference except in
+    the waiting.
+    """
+    request = urllib.request.Request(
+        PIPER_SERVER_URL,
+        data=json.dumps({"text": text, "model": model}).encode("utf-8"), method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoSpeechRedirect())
+    upstream = opener.open(request, timeout=30)
+    try:
+        source_rate = int(upstream.headers.get("X-Sample-Rate") or 22_050)
+    except ValueError:
+        source_rate = 22_050
+    state = None
+    total = 0
+    read = getattr(upstream, "read1", upstream.read)
+    try:
+        while True:
+            chunk = read(8192)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 22_050 * 2 * 120:
+                raise RuntimeError("Audio limit")
+            converted, state = _resample_to_24k(chunk, source_rate, state)
+            if converted:
+                yield {"type": "audio", "sample_rate": 24000, "format": "pcm_s16le",
+                       "data": base64.b64encode(converted).decode("ascii")}
+    finally:
+        upstream.close()
+    if not total:
+        raise RuntimeError("Piper produced no audio")
+    yield {"type": "done"}
 
 
 def _piper_speech_frames(text: str, binary: str, model: str) -> Iterator[dict]:
@@ -1617,6 +1668,10 @@ class JarvisHandler(BaseHTTPRequestHandler):
         candidates = []
         if fallback == "piper":
             model = piper_voice or getattr(self.config, "piper_model", "")
+            # Warm service first, the CLI second: same voice either way, and the
+            # fallback means a stopped service costs a second, not the answer.
+            candidates.append(("piper", lambda: _warm_piper_frames(
+                text, model, getattr(self.config, "app_token", ""))))
             candidates.append(("piper", lambda: _piper_speech_frames(
                 text, getattr(self.config, "piper_bin", ""), model)))
         candidates.append(("macos", lambda: _macos_speech_frames(

@@ -17,8 +17,12 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <!-- Interactive, not Background. macOS throttles a Background job's CPU
+         and its children inherit it, and speech synthesis is a child process:
+         the same sentence took 1.2s from a terminal and 9.2s through the
+         throttled bridge. This job serves a live conversation. -->
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Interactive</string>
     <key>WorkingDirectory</key>
     <string>/Users/marlon/.hermes</string>
     <key>StandardOutPath</key>

@@ -339,8 +339,14 @@ def test_the_voice_list_groups_local_and_cloud(tmp_path, monkeypatch):
     (tmp_path / 'de_DE-kerstin-low.onnx').write_bytes(b'x')
     groups = {g['id']: g for g in [
         {'id': 'piper', 'voices': bridge.piper_voices(str(tmp_path / 'de_DE-thorsten-high.onnx'))}]}
-    names = sorted(v['name'] for v in groups['piper']['voices'])
-    assert names == ['Kerstin (low)', 'Thorsten (high)']
+    voices = groups['piper']['voices']
+    assert sorted(v['name'] for v in voices) == ['Kerstin', 'Thorsten']
+    # The app decodes one type for both providers: a missing key here empties
+    # the whole picker rather than dropping one voice.
+    for voice in voices:
+        assert set(voice) == {'id', 'name', 'accent', 'gender', 'description'}
+        assert voice['accent'] == 'german'
+    assert {v['name']: v['gender'] for v in voices} == {'Thorsten': 'male', 'Kerstin': 'female'}
 
 
 def test_piper_voices_survives_a_missing_directory():
