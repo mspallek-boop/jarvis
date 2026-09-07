@@ -29,13 +29,25 @@ enum WindowTransition {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
+    /// Held from the moment it folds up.
+    ///
+    /// Searching `NSApp.windows` at restore time returned nil — an ordered-out
+    /// window is not reliably findable that way, and everything upstream worked
+    /// while this one lookup silently failed. Remembering the window we just
+    /// animated cannot fail for that reason; the search stays only as a
+    /// fallback for a first restore after launch.
+    private static weak var collapsed: NSWindow?
+
     static func mainWindow() -> NSWindow? {
-        NSApp.windows.first { !($0 is NSPanel) && $0.canBecomeMain && $0.contentView != nil }
+        collapsed ?? NSApp.windows.first {
+            !($0 is NSPanel) && $0.canBecomeMain && $0.contentView != nil
+        }
     }
 
     /// Fold the window down into the pill, then hand over.
     static func collapse(into target: NSRect, then finish: @escaping () -> Void) {
         guard let window = mainWindow(), window.isVisible else { finish(); return }
+        collapsed = window
         remember(window.frame)
         guard !reduceMotion else {
             window.orderOut(nil)
