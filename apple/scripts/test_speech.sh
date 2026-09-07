@@ -24,4 +24,9 @@ xcrun swiftc -module-cache-path "$test_output/ModuleCache" -parse-as-library Sou
     Tests/SpeechPlaybackSpeedTests.swift -o "$test_output/SpeechPlaybackSpeedTests"
 "$test_output/SpeechPlaybackSpeedTests" "$@"
 
+xcrun swiftc -module-cache-path "$test_output/ModuleCache" -parse-as-library \
+    Sources/Services/JarvisAPIClient.swift Sources/Models/ChatMessage.swift \
+    Tests/VoiceAvailabilityTests.swift -o "$test_output/VoiceAvailabilityTests"
+"$test_output/VoiceAvailabilityTests"
+
 echo "Test executables: $test_output"

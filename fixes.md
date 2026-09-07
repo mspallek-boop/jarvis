@@ -174,6 +174,9 @@ und der Code gehört Codex, nicht mir. Bitte einmal genauer:
   Port 8765 und wird vom Mute-Schalter der App gar nicht erfasst — das wäre
   eine echte, getrennte Ursache.
 
+### 9. Bilder direkt im Chat anzeigen
+Generierte Bilder werden derzeit zwar erzeugt und als `MEDIA:`-Referenz beziehungsweise direkter Link ausgegeben, erscheinen in der aktuellen Chat-Ansicht aber nicht als sichtbare Bildkachel. Die Bilddarstellung im API-/App-Rendering prüfen und reparieren.
+
 ## Betrieb — dringend
 
 **Die Festplatte ist voll.** 1,5 GiB frei von 228 GiB, Datenvolumen bei 100 %.

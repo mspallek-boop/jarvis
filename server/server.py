@@ -561,6 +561,7 @@ class VoicePipelineServer:
         await ws.send_json({"type": "agent_status", "state": "thinking"})
 
         q: asyncio.Queue = asyncio.Queue()
+        sentence_q: asyncio.Queue = asyncio.Queue()
         tts_lock = asyncio.Lock()  # serialise ack vs real sentences (no interleaved PCM)
 
         async def forward() -> None:
@@ -585,59 +586,136 @@ class VoicePipelineServer:
 
         forward_task = asyncio.create_task(forward())
         ack_task = asyncio.create_task(ack_filler()) if ack_text else None
-        try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                kind, value = item
-                if kind == "run":
-                    timing.run_id = value
-                    conn.current_run_id = value
-                    await ws.send_json({"type": "run_started", "run_id": value})
-                    continue
-                if kind == "tool":
-                    info = json.loads(value)
-                    timing.tools_used.append(info.get("name", "tool"))
-                    await ws.send_json({"type": "agent_status", "state": "tool_use",
-                                        "tool": info.get("name"), "preview": info.get("preview", "")})
-                    continue
-                if kind == "approval":
-                    await ws.send_json({"type": "approval_request", "data": json.loads(value),
-                                        "run_id": conn.current_run_id})
-                    continue
-                if kind == "final":
-                    info = json.loads(value)
-                    timing.interrupted = info.get("interrupted", False)
-                    continue
-                # kind == "text"
-                full_response.append(value)
-                pending += value
-                sentences, pending = self._extract_complete_sentences(pending)
-                for sentence in sentences:
-                    clean = self._clean_for_tts(sentence)
-                    if not clean:
+        tts_tasks: set[asyncio.Task] = set()
+
+        async def collect_sentences() -> None:
+            """Separate LLM parsing from playback so TTS can look ahead.
+
+            The old loop awaited the complete TTS stream before reading the
+            next LLM delta.  That meant sentence N+1 did not even start
+            synthesising until sentence N had finished playing.  Queueing
+            sentences here lets the playback side prefetch the next sentence
+            while preserving the wire order.
+            """
+            nonlocal pending
+            try:
+                while True:
+                    item = await q.get()
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    kind, value = item
+                    if kind == "run":
+                        timing.run_id = value
+                        conn.current_run_id = value
+                        await ws.send_json({"type": "run_started", "run_id": value})
                         continue
-                    if timing.first_sentence_monotonic is None:
-                        timing.first_sentence_monotonic = time.perf_counter()
-                    conn.spoken_sentences.append(clean)
-                    async with tts_lock:
-                        if not spoken:
-                            await ws.send_json({"type": "agent_status", "state": "speaking"})
-                            spoken = True
-                        await self._send_tts_sentence(ws, clean, timing)
-            tail = self._clean_for_tts(pending.strip())
-            if tail:
-                conn.spoken_sentences.append(tail)
-                async with tts_lock:
-                    await self._send_tts_sentence(ws, tail, timing)
+                    if kind == "tool":
+                        info = json.loads(value)
+                        timing.tools_used.append(info.get("name", "tool"))
+                        await ws.send_json({"type": "agent_status", "state": "tool_use",
+                                            "tool": info.get("name"), "preview": info.get("preview", "")})
+                        continue
+                    if kind == "approval":
+                        await ws.send_json({"type": "approval_request", "data": json.loads(value),
+                                            "run_id": conn.current_run_id})
+                        continue
+                    if kind == "final":
+                        info = json.loads(value)
+                        timing.interrupted = info.get("interrupted", False)
+                        continue
+                    full_response.append(value)
+                    pending += value
+                    sentences, pending = self._extract_complete_sentences(pending)
+                    for sentence in sentences:
+                        clean = self._clean_for_tts(sentence)
+                        if not clean:
+                            continue
+                        if timing.first_sentence_monotonic is None:
+                            timing.first_sentence_monotonic = time.perf_counter()
+                        conn.spoken_sentences.append(clean)
+                        await sentence_q.put(clean)
+                tail = self._clean_for_tts(pending.strip())
+                if tail:
+                    conn.spoken_sentences.append(tail)
+                    await sentence_q.put(tail)
+                await sentence_q.put(None)
+            except Exception as exc:
+                await sentence_q.put(exc)
+
+        async def start_tts(sentence: str) -> tuple[asyncio.Queue, asyncio.Task]:
+            chunk_q: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def worker() -> None:
+                try:
+                    for chunk in self.tts_chunks_sync(sentence, timing):
+                        loop.call_soon_threadsafe(chunk_q.put_nowait, chunk)
+                    loop.call_soon_threadsafe(chunk_q.put_nowait, None)
+                except Exception as exc:
+                    loop.call_soon_threadsafe(chunk_q.put_nowait, exc)
+
+            task = asyncio.create_task(asyncio.to_thread(worker))
+            tts_tasks.add(task)
+            task.add_done_callback(tts_tasks.discard)
+            return chunk_q, task
+
+        async def send_tts(chunk_q: asyncio.Queue, task: asyncio.Task) -> None:
+            async with tts_lock:
+                while True:
+                    item = await chunk_q.get()
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    await ws.send_bytes(item)
+            await task
+
+        async def prefetch(item_task: asyncio.Task):
+            sentence = await item_task
+            if sentence is None:
+                return None
+            if isinstance(sentence, Exception):
+                raise sentence
+            return await start_tts(sentence)
+
+        collector_task = asyncio.create_task(collect_sentences())
+        try:
+            next_item = asyncio.create_task(sentence_q.get())
+            sentence = await next_item
+            if isinstance(sentence, Exception):
+                raise sentence
+            if sentence is not None:
+                if not spoken:
+                    await ws.send_json({"type": "agent_status", "state": "speaking"})
+                    spoken = True
+                current = await start_tts(sentence)
+            while sentence is not None:
+                # Read the next sentence before waiting for this one to finish.
+                # Its producer then runs concurrently with current playback.
+                next_item = asyncio.create_task(sentence_q.get())
+                next_tts = asyncio.create_task(prefetch(next_item))
+                await send_tts(*current)
+                prefetched = await next_tts
+                if prefetched is None:
+                    break
+                current = prefetched
+                sentence = await next_item
+                if isinstance(sentence, Exception):
+                    raise sentence
+                # The prefetched queue belongs to this sentence. Send it on
+                # the next iteration, then prefetch the following one.
         finally:
             if ack_task and not ack_task.done():
                 ack_task.cancel()
             if not forward_task.done():
                 forward_task.cancel()
+            if not collector_task.done():
+                collector_task.cancel()
+            for task in tts_tasks:
+                if not task.done():
+                    task.cancel()
         timing.response_text = "".join(full_response).strip()
 
     async def _async_llm_events(
