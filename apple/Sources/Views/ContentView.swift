@@ -156,21 +156,24 @@ struct ContentView: View {
         // is out of the way but still listening, which is the whole point of a
         // push-to-talk pill. Bringing the app back takes it away again, so the
         // two are never on screen at once.
+        // The panel exists from launch so it is ready the instant the window
+        // goes away; it stays ordered out until then. Creating it during the
+        // hide races the hide and loses.
+        .task { openWindow(id: "jarvis-overlay") }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
-            openWindow(id: "jarvis-overlay")
+            model.overlayVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didUnhideNotification)) { _ in
-            dismissWindow(id: "jarvis-overlay")
+            model.overlayVisible = false
         }
-        // Minimising counts too: the window is gone from the screen either way,
-        // and that is the moment the small panel takes over.
+        // Minimising counts too: the window is off the screen either way, and
+        // that is the moment the small panel takes over.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { note in
-            guard (note.object as? NSWindow)?.identifier?.rawValue != "jarvis-overlay" else { return }
-            openWindow(id: "jarvis-overlay")
+            guard (note.object as? NSWindow)?.title != "JARVIS" else { return }
+            model.overlayVisible = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { note in
-            guard (note.object as? NSWindow)?.identifier?.rawValue != "jarvis-overlay" else { return }
-            dismissWindow(id: "jarvis-overlay")
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didDeminiaturizeNotification)) { _ in
+            model.overlayVisible = false
         }
         #endif
     }

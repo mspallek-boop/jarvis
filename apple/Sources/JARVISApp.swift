@@ -23,7 +23,7 @@ struct JARVISApp: App {
         Window("JARVIS", id: "jarvis-overlay") {
             OverlayView()
                 .environmentObject(model)
-                .background(OverlayWindowConfigurator())
+                .background(OverlayWindowConfigurator(visible: model.overlayVisible))
         }
         .defaultSize(width: 224, height: 62)
         .windowStyle(.hiddenTitleBar)

@@ -261,6 +261,8 @@ final class AppModel: ObservableObject {
     #if os(macOS)
     /// Push-to-talk from anywhere: hold to talk, double-tap for hands-free.
     let hotkey = HotkeyMonitor()
+    /// The small panel is shown while the main window is out of the way.
+    @Published var overlayVisible = false
     private var hotkeyObserver: AnyCancellable?
     #endif
     @Published private(set) var voiceListError: String?
