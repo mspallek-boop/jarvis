@@ -79,6 +79,12 @@ final class HotkeyMonitor: ObservableObject {
         }
     }
 
+    /// Whether the small overlay is up. The key is only watched then — see
+    /// AppModel.overlayVisible.
+    var active = false {
+        didSet { if active != oldValue { restart() } }
+    }
+
     @Published var enabled: Bool = UserDefaults.standard.object(forKey: "hotkeyEnabled") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(enabled, forKey: "hotkeyEnabled")
@@ -143,7 +149,7 @@ final class HotkeyMonitor: ObservableObject {
         isHeld = false
         pressedAt = nil
         holdDidStart = false
-        guard enabled else { return }
+        guard enabled, active else { return }
 
         let mask: NSEvent.EventTypeMask = key.isModifier ? [.flagsChanged] : [.keyDown, .keyUp]
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in

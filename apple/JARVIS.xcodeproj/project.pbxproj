@@ -54,8 +54,10 @@
 		C6318C4316D49FF3E9D41D58 /* JARVIS-Watch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A34562E24B9A74B4ECC1D169 /* JARVIS-Watch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D1C06FF446D41CF8C87A7B2D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0149145E6855F93FB72D9A6 /* ContentView.swift */; };
 		D3410CEB5F0AA7E3278C7024 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = BE492CB729A0699B12816187 /* AppIcon.icon */; };
+		D9919ABEEC8ECAED33AFFBD0 /* OverlayPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EEF5442FF82CFF5DFCD452 /* OverlayPanel.swift */; };
 		E573F2C669C566BFBD58C101 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55E64DE1A6B6D0A39EF53CA /* MessageBubble.swift */; };
 		E5E08D1995B23AEF6F4232CC /* SpeechPlaybackSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5B354C95444494ABFDFB10 /* SpeechPlaybackSpeed.swift */; };
+		E6A9C11955ADA54198E3498A /* OverlayPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EEF5442FF82CFF5DFCD452 /* OverlayPanel.swift */; };
 		E7147F3B95EDA4FBF14AE022 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8CFEA8899317EA95524D37CD /* Assets.xcassets */; };
 		E7991059FF5BD9384A52DC41 /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */; };
 		ED66C5220A55C7AA879E0204 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF0DEE643BA0F757FA42DF3 /* ChatMessage.swift */; };
@@ -110,6 +112,7 @@
 		06F2A17C7E7C119F8C6A7AD0 /* WatchConnectivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchConnectivityController.swift; sourceTree = "<group>"; };
 		070AC2894379A270DCF07D2F /* SpeechText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechText.swift; sourceTree = "<group>"; };
 		0D1F9AB9838BE692642BF230 /* JARVISWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JARVISWatchApp.swift; sourceTree = "<group>"; };
+		10EEF5442FF82CFF5DFCD452 /* OverlayPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayPanel.swift; sourceTree = "<group>"; };
 		134C14076E8AB28BC8CF0FF9 /* PlatformImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformImage.swift; sourceTree = "<group>"; };
 		1914BCE6BAADFBF806B0F8AE /* JARVIS-WatchComplication.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "JARVIS-WatchComplication.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1E2D87C90A40B984B28E298A /* BargeInDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BargeInDetector.swift; sourceTree = "<group>"; };
@@ -246,6 +249,7 @@
 				FA4B478F7CCE24096F5CC9D2 /* JarvisAPIClient.swift */,
 				E78AFC01342E09D6260979F6 /* KeychainStore.swift */,
 				F6B72D9D3A012E4BB87C579C /* NeuralSpeechPlayer.swift */,
+				10EEF5442FF82CFF5DFCD452 /* OverlayPanel.swift */,
 				134C14076E8AB28BC8CF0FF9 /* PlatformImage.swift */,
 				CE62E25BBD9B0943F8A64784 /* SpeechController.swift */,
 				DD5B354C95444494ABFDFB10 /* SpeechPlaybackSpeed.swift */,
@@ -446,6 +450,7 @@
 				E573F2C669C566BFBD58C101 /* MessageBubble.swift in Sources */,
 				7704BD054AB4013063D2F835 /* NeuralSpeechPlayer.swift in Sources */,
 				1591F0AD65F37247B9332E22 /* OrbView.swift in Sources */,
+				D9919ABEEC8ECAED33AFFBD0 /* OverlayPanel.swift in Sources */,
 				AC5D657B9593B9271949615C /* OverlayView.swift in Sources */,
 				A7772C5A3A4677334DFB7A3B /* PlatformImage.swift in Sources */,
 				6DDF7E0E7E044EBD7ED41C2C /* SettingsView.swift in Sources */,
@@ -474,6 +479,7 @@
 				64A65BCCA97B4DDC052F0EE3 /* MessageBubble.swift in Sources */,
 				A8C96CC48BEEDFB98901A879 /* NeuralSpeechPlayer.swift in Sources */,
 				809A2A7CD4E871FD4B296266 /* OrbView.swift in Sources */,
+				E6A9C11955ADA54198E3498A /* OverlayPanel.swift in Sources */,
 				5581FC4937F792D32EEAB71C /* OverlayView.swift in Sources */,
 				779B2B619F78E8117EE411FE /* PlatformImage.swift in Sources */,
 				06CFBD9DD5C96B18FE88CB17 /* SettingsView.swift in Sources */,

@@ -262,7 +262,17 @@ final class AppModel: ObservableObject {
     /// Push-to-talk from anywhere: hold to talk, double-tap for hands-free.
     let hotkey = HotkeyMonitor()
     /// The small panel is shown while the main window is out of the way.
-    @Published var overlayVisible = false
+    @Published var overlayVisible = false {
+        didSet {
+            guard overlayVisible != oldValue else { return }
+            overlayVisible ? overlayPanel.show(model: self) : overlayPanel.hide()
+            // Push-to-talk belongs to the small mode only. With the window in
+            // front, JARVIS listens the way he always did, and a global key
+            // grab would fight the app's own microphone handling.
+            hotkey.active = overlayVisible
+        }
+    }
+    private let overlayPanel = OverlayPanelController()
     private var hotkeyObserver: AnyCancellable?
     #endif
     @Published private(set) var voiceListError: String?

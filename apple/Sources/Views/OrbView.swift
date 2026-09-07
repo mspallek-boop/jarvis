@@ -136,6 +136,10 @@ struct CubeGrid: View {
     /// be mush at 30pt. The animation is identical, so both read as one thing
     /// at different sizes rather than as two designs.
     var columns: Int = 5
+    /// The overlay panel lives on while the app is hidden, and a hidden app's
+    /// scene is not `.active` — which froze the grid at exactly the moment it
+    /// became the only thing on screen.
+    var ignoresScenePhase: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -202,7 +206,7 @@ struct CubeGrid: View {
         animationTask?.cancel()
         animationTask = nil
 
-        guard animating, !reduceMotion, scenePhase == .active else {
+        guard animating, !reduceMotion, ignoresScenePhase || scenePhase == .active else {
             isBauhaus = false
             return
         }
@@ -271,6 +275,7 @@ struct OrbView: View {
     var size: CGFloat? = nil
     var color: Color? = nil
     var columns: Int = 5
+    var ignoresScenePhase: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -280,7 +285,8 @@ struct OrbView: View {
     }
 
     var body: some View {
-        CubeGrid(animating: listening || thinking, columns: columns)
+        CubeGrid(animating: listening || thinking, columns: columns,
+                 ignoresScenePhase: ignoresScenePhase)
             .foregroundStyle(color ?? ink)
             .opacity(active ? 1 : 0.9)
             .frame(width: gridSize, height: gridSize)

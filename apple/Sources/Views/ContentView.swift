@@ -10,10 +10,6 @@ struct ContentView: View {
     @State private var runsExpanded = false
     @State private var voiceControlIsVisible = true
     @Namespace private var thinkingOrbNamespace
-    #if os(macOS)
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
-    #endif
 
     private let chatScrollSpace = "jarvis-chat-scroll"
     private let chatBottomAnchor = "jarvis-chat-bottom"
@@ -156,10 +152,6 @@ struct ContentView: View {
         // is out of the way but still listening, which is the whole point of a
         // push-to-talk pill. Bringing the app back takes it away again, so the
         // two are never on screen at once.
-        // The panel exists from launch so it is ready the instant the window
-        // goes away; it stays ordered out until then. Creating it during the
-        // hide races the hide and loses.
-        .task { openWindow(id: "jarvis-overlay") }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
             model.overlayVisible = true
         }

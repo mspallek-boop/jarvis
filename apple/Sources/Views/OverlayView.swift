@@ -30,7 +30,8 @@ struct OverlayView: View {
             // dead screenshot, which is what made the first version look broken.
             OrbView(active: true, listening: listening,
                     thinking: model.isWorking || !listening,
-                    size: 34, color: ink, columns: 3)
+                    size: 34, color: ink, columns: 3,
+                    ignoresScenePhase: true)
                 .opacity(listening || model.isWorking ? 1 : 0.6)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -45,6 +46,17 @@ struct OverlayView: View {
                 }
             }
             Spacer(minLength: 0)
+            // A button, not a tap on the whole panel: the rest of the surface
+            // has to stay free, or dragging the panel starts a conversation.
+            Button { Task { await model.toggleListening() } } label: {
+                Image(systemName: listening ? "mic.fill" : "mic")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ink.opacity(listening ? 0.95 : 0.5))
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
         }
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -57,72 +69,10 @@ struct OverlayView: View {
                 )
         )
         .animation(.easeInOut(duration: 0.22), value: listening)
-        .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .onTapGesture { Task { await model.toggleListening() } }
         .help(model.hotkey.enabled
               ? "\(model.hotkey.key.label) halten zum Sprechen · doppelt tippen für freihändig"
               : "Klicken zum Sprechen")
     }
 }
 
-/// Makes the window disappear as a window, and survive the app being hidden.
-///
-/// `canHide = false` is the whole trick. ⌘H hides *every* window an app owns,
-/// so opening one at that moment shows nothing — which is why the first attempt
-/// looked like it did nothing at all. This flag exempts the panel, which is
-/// what makes "hidden but still listening" possible.
-///
-/// The window therefore exists from launch and is ordered in and out by hand,
-/// rather than created on demand: a window created while the app is already
-/// hiding races the hide and loses.
-struct OverlayWindowConfigurator: NSViewRepresentable {
-    let visible: Bool
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { configure(view.window) }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { apply(nsView.window) }
-    }
-
-    private func configure(_ window: NSWindow?) {
-        guard let window else { return }
-        window.canHide = false                 // survives ⌘H — the point of all this
-        window.styleMask.insert(.fullSizeContentView)
-        window.styleMask.remove(.resizable)
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.isMovableByWindowBackground = true
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        for button in [NSWindow.ButtonType.closeButton, .zoomButton, .miniaturizeButton] {
-            window.standardWindowButton(button)?.isHidden = true
-        }
-        if !UserDefaults.standard.bool(forKey: "overlayPlaced"),
-           let screen = window.screen ?? NSScreen.main {
-            let visibleFrame = screen.visibleFrame
-            let size = window.frame.size
-            window.setFrameOrigin(CGPoint(x: visibleFrame.maxX - size.width - 24,
-                                          y: visibleFrame.maxY - size.height - 24))
-            UserDefaults.standard.set(true, forKey: "overlayPlaced")
-        }
-        apply(window)
-    }
-
-    private func apply(_ window: NSWindow?) {
-        guard let window else { return }
-        if visible {
-            // Never steal focus: the user hid the app to work somewhere else.
-            window.orderFrontRegardless()
-        } else if window.isVisible {
-            window.orderOut(nil)
-        }
-    }
-}
 #endif
