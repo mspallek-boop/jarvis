@@ -237,3 +237,68 @@ def test_local_worker_outage_also_falls_back(monkeypatch):
     status, head, _ = call_full({'text': 'Hallo'}, {'speech_provider': 'local'})
     assert status == 200
     assert b'X-JARVIS-Speech-Provider: macos' in head
+
+
+# ------------------------------------------------------- local neural voice
+
+def _frames(content):
+    return [json.loads(line) for line in content.splitlines() if line]
+
+
+def test_piper_is_preferred_over_the_macos_voice(monkeypatch):
+    """The macOS voices are the old compact ones; piper is why this exists."""
+    monkeypatch.setattr(bridge, '_open_elevenlabs_speech', _quota_exhausted)
+    monkeypatch.setattr(bridge, '_piper_speech_frames',
+                        lambda *a, **k: iter([{'type': 'audio', 'sample_rate': 24000,
+                                               'format': 'pcm_s16le', 'data': 'AAA='},
+                                              {'type': 'done'}]))
+    called = []
+    monkeypatch.setattr(bridge, '_macos_speech_frames',
+                        lambda *a, **k: called.append(1) or iter([]))
+    status, head, content = call_full({'text': 'Hallo'}, {'speech_fallback': 'piper'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: piper' in head
+    assert _frames(content)[-1] == {'type': 'done'}
+    assert not called
+
+
+def test_a_missing_piper_falls_through_to_the_macos_voice(monkeypatch):
+    """A voice that fails before its first frame can still be replaced."""
+    monkeypatch.setattr(bridge, '_open_elevenlabs_speech', _quota_exhausted)
+    monkeypatch.setattr(bridge, '_piper_speech_frames',
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError('not installed')))
+    status, head, content = call_full({'text': 'Hallo'}, {'speech_fallback': 'piper'})
+    assert status == 200
+    assert b'X-JARVIS-Speech-Provider: macos' in head
+    assert _frames(content)[-1] == {'type': 'done'}
+
+
+def test_when_every_local_voice_fails_the_provider_error_is_reported(monkeypatch):
+    monkeypatch.setattr(bridge, '_open_elevenlabs_speech', _quota_exhausted)
+    monkeypatch.setattr(bridge, '_piper_speech_frames',
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError('no piper')))
+    monkeypatch.setattr(bridge, '_macos_speech_frames',
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError('no say')))
+    assert call_full({'text': 'Hallo'}, {'speech_fallback': 'piper'})[0] == 503
+
+
+def test_piper_output_is_resampled_to_the_rate_the_app_accepts():
+    """The player accepts 24 kHz only, and piper's models run at 22.05 kHz.
+
+    Converting in the bridge keeps the wire format one fixed contract, so a new
+    voice never becomes a change in the Swift client.
+    """
+    quarter_second = b'\x00\x01' * 5512          # 22050 Hz, mono, s16le
+    out, state = bridge._resample_to_24k(quarter_second, 22050, None)
+    assert state is not None
+    assert abs(len(out) / 2 - 6000) < 60         # ~0.25s at 24 kHz
+    unchanged, state = bridge._resample_to_24k(quarter_second, 24000, None)
+    assert unchanged == quarter_second and state is None
+
+
+def test_resampling_keeps_its_filter_across_chunks():
+    """Dropping the state between chunks clicks at every boundary."""
+    chunk = b'\x00\x01' * 1024
+    _, state = bridge._resample_to_24k(chunk, 22050, None)
+    second, next_state = bridge._resample_to_24k(chunk, 22050, state)
+    assert second and next_state != state

@@ -202,3 +202,25 @@ scripts/jarvis-smoke.sh    # synthesized voice turn through the full stack (macO
 
 Then the real test: click the ring and ask "what's in your memory file?" —
 a real agent answers with real file contents.
+
+## Lokale neuronale Stimme (Piper)
+
+Seit 2026-09-07 spricht JARVIS lokal mit Piper, weil das ElevenLabs-Konto auf
+dem Free-Tier aufgebraucht ist und die eingebauten macOS-Stimmen die alten
+Kompakt-Stimmen sind.
+
+```bash
+python3.11 -m venv ~/.hermes/piper-venv
+~/.hermes/piper-venv/bin/pip install piper-tts
+~/.hermes/piper-venv/bin/python -m piper.download_voices \
+  --download-dir ~/.hermes/piper-voices de_DE-thorsten-high
+```
+
+Die Bridge findet beides an diesen Standardpfaden von selbst. Abweichend:
+`JARVIS_PIPER_BIN` und `JARVIS_PIPER_MODEL` in `~/.hermes/.env`.
+
+Reihenfolge der Stimmen: ElevenLabs (nur mit Guthaben) → Piper → macOS `say`.
+`JARVIS_TTS_FALLBACK` steuert sie (`piper`, `macos`, oder `""` zum Abschalten);
+der Antwort-Header `X-JARVIS-Speech-Provider` sagt, wer tatsächlich gesprochen
+hat. Andere deutsche Stimmen listet `python -m piper.download_voices` ohne
+Argument, z. B. `de_DE-kerstin-low` oder `de_DE-thorsten_emotional-medium`.

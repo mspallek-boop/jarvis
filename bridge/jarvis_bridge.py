@@ -8,6 +8,7 @@ never leaves the Mac; clients only receive a separate JARVIS app token.
 from __future__ import annotations
 
 import argparse
+import audioop
 import base64
 import functools
 import hmac
@@ -124,8 +125,10 @@ class BridgeConfig:
     # When the configured provider fails — an exhausted ElevenLabs quota
     # answers 401, and the neural worker is simply not always running —
     # "macos" keeps JARVIS talking through the built-in `say` command.
-    speech_fallback: str = "macos"
+    speech_fallback: str = "piper"
     macos_voice: str = ""
+    piper_bin: str = ""
+    piper_model: str = ""
     elevenlabs_key: str = field(default="", repr=False)
     elevenlabs_voice_id: str = ""
     elevenlabs_model: str = "eleven_multilingual_v2"
@@ -163,8 +166,10 @@ class BridgeConfig:
             file_roots=roots or (Path.home().resolve(),),
             relay_url=os.environ.get("JARVIS_RELAY_URL", "").strip(),
             speech_provider=os.environ.get("JARVIS_TTS_PROVIDER", "local").strip(),
-            speech_fallback=os.environ.get("JARVIS_TTS_FALLBACK", "macos").strip().lower(),
+            speech_fallback=os.environ.get("JARVIS_TTS_FALLBACK", "piper").strip().lower(),
             macos_voice=os.environ.get("JARVIS_TTS_MACOS_VOICE", "").strip(),
+            piper_bin=os.environ.get("JARVIS_PIPER_BIN", str(Path.home() / ".hermes/piper-venv/bin/piper")).strip(),
+            piper_model=os.environ.get("JARVIS_PIPER_MODEL", str(Path.home() / ".hermes/piper-voices/de_DE-thorsten-high.onnx")).strip(),
             elevenlabs_key=os.environ.get("ELEVENLABS_API_KEY", "").strip(),
             elevenlabs_voice_id=os.environ.get("ELEVENLABS_VOICE_ID", "").strip(),
             elevenlabs_model=os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2").strip(),
@@ -569,6 +574,63 @@ def _default_german_voice() -> str:
         if name in installed:
             return installed[name]
     return next(iter(installed.values()), "")
+
+
+def _resample_to_24k(pcm: bytes, source_rate: int, state):
+    """Piper's models run at 22.05 kHz; the app's player accepts 24 kHz only.
+
+    Converting here keeps the wire format a single, fixed contract, so adding a
+    voice never becomes a change in the Swift client. `state` carries the
+    filter across chunks — dropping it would click at every chunk boundary.
+    """
+    if source_rate == 24_000:
+        return pcm, state
+    return audioop.ratecv(pcm, 2, 1, source_rate, 24_000, state)
+
+
+def _piper_speech_frames(text: str, binary: str, model: str) -> Iterator[dict]:
+    """Local neural speech, framed like the cloud voice.
+
+    Piper is offline, free and needs no account, and its German "Thorsten" voice
+    is the reason this exists: the built-in macOS voices are the old compact
+    ones, and they sound it. Streams raw PCM from the process as it is produced,
+    so speaking starts before the sentence is finished synthesising.
+    """
+    if not (binary and model and os.path.exists(binary) and os.path.exists(model)):
+        raise RuntimeError("Piper is not installed")
+    try:
+        with open(model + ".json", encoding="utf-8") as handle:
+            source_rate = int(json.load(handle).get("audio", {}).get("sample_rate", 22_050))
+    except (OSError, ValueError, TypeError):
+        source_rate = 22_050
+
+    process = subprocess.Popen(
+        [binary, "-m", model, "--output-raw"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    state = None
+    total = 0
+    try:
+        process.stdin.write(text.encode("utf-8"))
+        process.stdin.close()
+        while True:
+            chunk = process.stdout.read(8192)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 22_050 * 2 * 120:
+                raise RuntimeError("Audio limit")
+            converted, state = _resample_to_24k(chunk, source_rate, state)
+            if converted:
+                yield {"type": "audio", "sample_rate": 24000, "format": "pcm_s16le",
+                       "data": base64.b64encode(converted).decode("ascii")}
+    finally:
+        # Barge-in closes the stream mid-sentence; never leave piper running.
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)
+    if not total:
+        raise RuntimeError("Piper produced no audio")
+    yield {"type": "done"}
 
 
 def _macos_speech_frames(text: str, voice: str = "") -> Iterator[dict]:
@@ -1390,22 +1452,37 @@ class JarvisHandler(BaseHTTPRequestHandler):
             self._stream_speech_frames(_encoded_frames(_pcm_frames(upstream)), "elevenlabs")
 
     def _speak_locally_or_fail(self, text: str, message: str, status: int) -> None:
-        """Last resort before silence: the built-in macOS voice.
+        """Speak locally rather than go silent, best voice first.
 
-        Only when voice.fallback is "macos". Otherwise the original provider
-        error is reported unchanged, so a misconfiguration stays visible instead
-        of hiding behind a voice the user did not ask for.
+        "piper" is the local neural voice and the one worth hearing; the macOS
+        `say` voices are the old compact ones and are the rung below it. Set the
+        fallback to "" to turn this off entirely, so a misconfiguration stays
+        visible instead of hiding behind a voice nobody chose.
+
+        Each candidate is started far enough to produce its first frame before
+        the response headers go out. A voice that fails at that point can still
+        be replaced by the next; one that fails later cannot, because the client
+        is already receiving audio.
         """
-        if getattr(self.config, "speech_fallback", "") != "macos":
+        fallback = getattr(self.config, "speech_fallback", "")
+        if fallback not in {"piper", "macos"}:
             self._json(status, {"error": message})
             return
-        try:
-            frames = _macos_speech_frames(text, getattr(self.config, "macos_voice", ""))
-            first = next(iter(frames))
-        except Exception:
-            self._json(status, {"error": message})
+        candidates = []
+        if fallback == "piper":
+            candidates.append(("piper", lambda: _piper_speech_frames(
+                text, getattr(self.config, "piper_bin", ""), getattr(self.config, "piper_model", ""))))
+        candidates.append(("macos", lambda: _macos_speech_frames(
+            text, getattr(self.config, "macos_voice", ""))))
+        for name, build in candidates:
+            try:
+                frames = build()
+                first = next(iter(frames))
+            except Exception:
+                continue
+            self._stream_speech_frames(_encoded_frames(itertools.chain([first], frames)), name)
             return
-        self._stream_speech_frames(_encoded_frames(itertools.chain([first], frames)), "macos")
+        self._json(status, {"error": message})
 
     def _stream_speech_frames(self, lines: Iterator[bytes], provider: str) -> None:
         self.send_response(200)
