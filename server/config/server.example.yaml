@@ -88,9 +88,13 @@ proactive:                          # Jarvis speaks unprompted (POST /api/say + 
 
 voice:
   provider: elevenlabs
-  # Local fallback when no ElevenLabs key is set in ~/.hermes/.env. "macos"
-  # speaks via the built-in `say` command (offline, free, no account); "" or
-  # anything else keeps the old behaviour of failing the turn.
+  # Local fallback when the cloud voice cannot speak — no ElevenLabs key in
+  # ~/.hermes/.env, or the account answering 401 (quota exhausted), 402 (voice
+  # needs a paid tier) or 429 (rate limited). "macos" speaks via the built-in
+  # `say` command (offline, free, no account); "" or anything else keeps the
+  # old behaviour of failing the turn.
+  # The Apple app takes the same route through the bridge, configured with
+  # JARVIS_TTS_FALLBACK (default "macos") and JARVIS_TTS_MACOS_VOICE.
   fallback: macos
   macos_voice: ""            # e.g. "Daniel" (en-GB) — empty = system default
   model: eleven_flash_v2_5

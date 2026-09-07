@@ -518,8 +518,18 @@ class VoicePipelineServer:
             json=payload, stream=True, timeout=120,
         )
         if response.status_code >= 400:
+            status, detail = response.status_code, response.text[:1000]
             response.close()
-            raise RuntimeError(f"ElevenLabs HTTP {response.status_code}: {response.text[:1000]}")
+            # An exhausted free-tier quota answers 401, a rate limit 429 and a
+            # voice the plan may not use 402. The key is present and valid, so
+            # the "no key" branch above never fires — without this the whole
+            # turn goes silent for the rest of the billing month.
+            if status in (401, 402, 429) and str(voice.get("fallback", "")).lower() == "macos" \
+                    and shutil.which("say"):
+                print(f"ElevenLabs HTTP {status} — speaking with the local macOS voice", flush=True)
+                yield from self._macos_tts_chunks(text, timing)
+                return
+            raise RuntimeError(f"ElevenLabs HTTP {status}: {detail}")
         try:
             for chunk in response.iter_content(chunk_size=4096):
                 if not chunk:
