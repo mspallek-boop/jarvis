@@ -191,12 +191,22 @@ final class AppModel: ObservableObject {
     @Published var input = ""
     @Published var isWorking = false
     @Published private(set) var activityLabel = "Ich denke nach"
+    @Published private(set) var runs: [JarvisAPIClient.RunStatus] = []
+    @Published private(set) var notificationBanner: String?
     @Published private(set) var liveResponse = ""
     @Published var connection: ConnectionState = .unchecked
     @Published var showingSettings = false
     @Published var serverURL: String
     @Published var token: String
-    @Published var speaksReplies: Bool
+    @Published var speaksReplies: Bool {
+        didSet {
+            UserDefaults.standard.set(speaksReplies, forKey: "speaksReplies")
+            if !speaksReplies {
+                speech.stopSpeaking()
+                Task { await resumeVoice() }
+            }
+        }
+    }
     @Published var conversation: String
     @Published var theme: AppTheme
     @Published var backgroundChoice: AppBackground
@@ -252,7 +262,7 @@ final class AppModel: ObservableObject {
                 guard let raw = await Self.loadData(from: provider, type: type) else { continue }
                 // Normalise first: a macOS screenshot lands on the clipboard as
                 // TIFF, which the bridge would refuse.
-                guard let png = PlatformImage.pngData(from: raw) ?? Optional(raw) else { continue }
+                guard let png = PlatformImage.pngData(from: raw) else { continue }
                 await attachImage(png)
                 return
             }
@@ -309,6 +319,12 @@ final class AppModel: ObservableObject {
     }
     private var activeRunID: String?
     private var chatTask: Task<JarvisAPIClient.ChatResponse, Error>?
+    private var statusPollTask: Task<Void, Never>?
+    private var bannerTask: Task<Void, Never>?
+    private var notificationCursor: Int {
+        get { UserDefaults.standard.integer(forKey: "notificationCursor") }
+        set { UserDefaults.standard.set(newValue, forKey: "notificationCursor") }
+    }
     let speech = SpeechController()
     private var speechObserver: AnyCancellable?
 #if os(iOS)
@@ -522,8 +538,66 @@ final class AppModel: ObservableObject {
             } else {
                 connection = health.ok ? .online : .offline("Hermes meldet einen Fehler")
             }
+            await refreshStatus()
         } catch {
             connection = .offline(error.localizedDescription)
+        }
+    }
+
+    private func refreshStatus() async {
+        guard !token.isEmpty else { return }
+        do {
+            let client = try makeClient()
+            runs = try await client.runs().runs
+        } catch {
+            // The status board is supplementary; a temporary timeout must not
+            // turn a healthy chat connection into an error banner.
+        }
+        do {
+            let client = try makeClient()
+            let response = try await client.notifications(since: notificationCursor)
+            guard !response.notifications.isEmpty else { return }
+            let newItems = response.notifications
+            for item in newItems {
+                appendMessage(ChatMessage(role: .system, text: item.line))
+            }
+            notificationBanner = newItems.count == 1
+                ? newItems[0].line
+                : "\(newItems.count) Benachrichtigungen"
+            bannerTask?.cancel()
+            bannerTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                guard !Task.isCancelled else { return }
+                self?.notificationBanner = nil
+            }
+            if speaksReplies, !isWorking, !speech.isSpeaking, voiceForeground {
+                speech.speak(newItems.count == 1 ? newItems[0].line : "Du hast \(newItems.count) neue Benachrichtigungen.")
+            }
+            do {
+                try await client.markNotificationsRead(through: response.latest)
+                notificationCursor = max(notificationCursor, response.latest)
+            } catch {
+                // Keep the cursor unchanged so an unread notification is not
+                // lost if the acknowledgement request briefly fails.
+            }
+        } catch {
+            // Notifications are best-effort and will be retried on the next poll.
+        }
+    }
+
+    func dismissNotificationBanner() {
+        notificationBanner = nil
+        bannerTask?.cancel()
+    }
+
+    private func startStatusPolling() {
+        statusPollTask?.cancel()
+        statusPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(18))
+                guard !Task.isCancelled, let self, self.voiceForeground else { return }
+                await self.refreshStatus()
+            }
         }
     }
 
@@ -565,7 +639,14 @@ final class AppModel: ObservableObject {
 
     func setVoiceForeground(_ active: Bool) async {
         voiceForeground = active
-        if active { await resumeVoice() } else { speech.suspend() }
+        if active {
+            startStatusPolling()
+            await resumeVoice()
+        } else {
+            statusPollTask?.cancel()
+            statusPollTask = nil
+            speech.suspend()
+        }
     }
 
     func setTyping(_ typing: Bool) async {
@@ -588,8 +669,9 @@ final class AppModel: ObservableObject {
 
     func send(_ explicitText: String? = nil) async {
         let text = (explicitText ?? input).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isWorking else { return }
-        if speech.interruptsBySpeaking {
+        guard (!text.isEmpty || !pendingImagePath.isEmpty), !isWorking, !isUploadingImage else { return }
+        let message = text.isEmpty ? "Was ist auf diesem Bild zu sehen?" : text
+        if speech.interruptsBySpeaking && voiceModeEnabled && voiceForeground {
             // Keep hearing the user through thinking and speaking alike.
             await speech.listenThrough()
         } else {
@@ -597,7 +679,7 @@ final class AppModel: ObservableObject {
         }
         input = ""
         lastError = nil
-        appendMessage(ChatMessage(role: .user, text: text))
+        appendMessage(ChatMessage(role: .user, text: message))
         // The picture belongs to this turn only, so it is taken now and the
         // composer cleared: a stale one must not ride along with the next
         // question.
@@ -616,20 +698,20 @@ final class AppModel: ObservableObject {
             if shouldSpeak { speech.beginStream(client: client) }
             let conversationID = conversation
             let pending = Task {
-                try await client.chatStreaming(message: text, conversation: conversationID,
+                try await client.chatStreaming(message: message, conversation: conversationID,
                                                clientRunID: id, imagePath: attachedImage) { [weak self] frame in
                     guard let self, self.activeRunID == id else { return }
                     if frame.type == "delta", let delta = frame.text {
                         self.liveResponse += delta
                         self.activityLabel = "Ich antworte"
                         let ready = sentences.append(delta)
-                        if shouldSpeak && self.voiceForeground {
+                        if shouldSpeak && self.speaksReplies && self.voiceForeground {
                             for sentence in ready { self.speech.enqueueSentence(sentence) }
                         }
                     } else if frame.type == "activity", let phase = frame.phase {
                         self.activityLabel = JarvisAPIClient.Activity(phase: phase, tool: frame.tool ?? "").label
                         if phase == "tool", !announcedTool, self.liveResponse.isEmpty,
-                           shouldSpeak, self.voiceForeground {
+                           shouldSpeak, self.speaksReplies, self.voiceForeground {
                             announcedTool = true
                             let tool = (frame.tool ?? "").lowercased()
                             let feedback = tool.contains("search") || tool.contains("web") || tool.contains("browser")
@@ -650,7 +732,7 @@ final class AppModel: ObservableObject {
                                       attachments: response.messageAttachments))
             connection = .online
             liveResponse = ""
-            if shouldSpeak && voiceForeground {
+            if shouldSpeak && speaksReplies && voiceForeground {
                 for sentence in sentences.finish(finalText: response.text) { speech.enqueueSentence(sentence) }
                 speech.endStream()
             } else {

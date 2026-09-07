@@ -7,6 +7,7 @@ struct ContentView: View {
     @FocusState private var typingFocused: Bool
     @State private var showingFiles = false
     @State private var showingHistory = false
+    @State private var runsExpanded = false
     @State private var voiceControlIsVisible = true
     @Namespace private var thinkingOrbNamespace
 
@@ -27,6 +28,16 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 header
                 connectionBanner
+                if let banner = model.notificationBanner {
+                    Text(banner)
+                        .font(model.appFont(.caption))
+                        .foregroundStyle(ink.opacity(0.72))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(ink.opacity(0.055))
+                        .onTapGesture { model.dismissNotificationBanner() }
+                }
                 if isTyping {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -35,7 +46,7 @@ struct ContentView: View {
                             ForEach(model.messages) {
                                 MessageBubble(message: $0).id($0.id)
                             }
-                            if model.isWorking {
+                            if model.isWorking || !model.runs.isEmpty {
                                 if !model.liveResponse.isEmpty {
                                     Text(AnswerText.formatted(model.liveResponse))
                                         .font(model.appFont(.body))
@@ -43,15 +54,20 @@ struct ContentView: View {
                                         .textSelection(.enabled)
                                         .padding(.vertical, 12)
                                 }
-                                HStack(spacing: 9) {
-                                    ProgressView().tint(ink)
-                                    Text(model.activityLabel)
-                                        .font(.caption2.monospaced())
-                                        .tracking(1.6)
-                                    Spacer()
+                                activityStatus
+                                if runsExpanded && model.runs.count > 1 {
+                                    ForEach(model.runs) { run in
+                                        HStack(spacing: 8) {
+                                            Text("──")
+                                            Text(run.phaseLabel)
+                                            Spacer()
+                                            Text(run.elapsedLabel)
+                                                .monospacedDigit()
+                                        }
+                                        .font(model.appFont(.caption2))
+                                        .foregroundStyle(ink.opacity(0.48))
+                                    }
                                 }
-                                .foregroundStyle(ink.opacity(0.58))
-                                .padding(.vertical, 18)
                             }
                             // A fixed target at the very end: the growing answer
                             // has no stable id to scroll to while it streams.
@@ -95,6 +111,18 @@ struct ContentView: View {
             }
         }
         .foregroundStyle(ink)
+        #if os(macOS)
+        .background {
+            ClipboardImagePasteHandler(enabled: !isPresentingSheet) { data in
+                withAnimation(.easeInOut(duration: 0.25)) { isTyping = true }
+                typingFocused = true
+                Task {
+                    await model.setTyping(true)
+                    await model.attachImage(data)
+                }
+            }
+        }
+        #endif
         .sheet(isPresented: $model.showingSettings) {
             SettingsView().environmentObject(model)
         }
@@ -127,9 +155,47 @@ struct ContentView: View {
 
     private var voiceLabel: String {
         if model.speech.isSpeaking { return "Tippen zum Unterbrechen" }
-        if model.isWorking { return model.activityLabel }
+        if model.isWorking || !model.runs.isEmpty { return activitySummary }
         if model.speech.isListening { return "Ich höre zu" }
         return "Tippen zum Sprechen"
+    }
+
+    private var activitySummary: String {
+        guard model.runs.count > 1 else { return model.activityLabel }
+        let foreground = model.runs.first?.phaseLabel ?? model.activityLabel
+        return "Ich " + foreground + " · +" + String(model.runs.count - 1)
+    }
+
+    @ViewBuilder
+    private var activityStatus: some View {
+        Group {
+            if model.runs.count > 1 {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { runsExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 9) {
+                        ProgressView().tint(ink)
+                        Text(activitySummary)
+                            .font(.caption2.monospaced())
+                            .tracking(1.2)
+                        Spacer()
+                        Image(systemName: runsExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 9) {
+                    ProgressView().tint(ink)
+                    Text(model.activityLabel)
+                        .font(.caption2.monospaced())
+                        .tracking(1.6)
+                    Spacer()
+                }
+            }
+        }
+        .foregroundStyle(ink.opacity(0.58))
+        .padding(.vertical, 18)
     }
 
     private var voiceStage: some View {
@@ -197,7 +263,7 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 8) {
             Text("JARVIS")
                 .font(model.appFont(.caption, weight: .semibold))
                 .tracking(2.4)
@@ -206,6 +272,31 @@ struct ContentView: View {
                 .frame(width: 5, height: 5)
                 .accessibilityLabel(model.connection.label)
             Spacer()
+            Button { model.speaksReplies.toggle() } label: {
+                Image(systemName: model.speaksReplies ? "speaker.wave.2" : "speaker.slash.fill")
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(ink.opacity(model.speaksReplies ? 0.08 : 0.20)))
+            }
+            .accessibilityLabel(model.speaksReplies ? "JARVIS stummschalten" : "Sprachausgabe einschalten")
+            .help(model.speaksReplies ? "JARVIS stummschalten" : "Sprachausgabe einschalten")
+            Menu {
+                Picker("Sprechtempo", selection: Binding(
+                    get: { model.speech.playbackSpeed },
+                    set: { model.speech.playbackSpeed = $0 }
+                )) {
+                    ForEach(SpeechPlaybackSpeed.allCases) { speed in
+                        Text(speed.label).tag(speed)
+                    }
+                }
+            } label: {
+                Text(model.speech.playbackSpeed.rawValue.formatted(.number.precision(.fractionLength(0...2))) + "×")
+                    .font(.caption.monospacedDigit())
+                    .frame(minWidth: 34, minHeight: 34)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Sprechtempo: \(model.speech.playbackSpeed.label)")
+            .help("Sprechtempo ändern")
             if model.connection == .sleeping {
                 Button {
                     Task { await model.wakeMac() }
@@ -374,6 +465,7 @@ struct ContentView: View {
                     .foregroundStyle(ink.opacity(0.45))
             }
             .buttonStyle(.plain)
+            .disabled(model.isUploadingImage)
             .accessibilityLabel("Bild entfernen")
         }
         .padding(.horizontal, 20)
@@ -383,6 +475,14 @@ struct ContentView: View {
     private var composer: some View {
         VStack(spacing: 0) {
         if model.pendingImageData != nil || model.isUploadingImage { pendingImageChip }
+        if let error = model.lastError {
+            Text(error)
+                .font(model.appFont(.caption))
+                .foregroundStyle(ink.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+        }
         HStack(spacing: 10) {
             if showCompactThinkingOrb {
                 OrbView(
@@ -442,13 +542,6 @@ struct ContentView: View {
         }
         .background(background)
         .animation(.snappy(duration: 0.32), value: showCompactThinkingOrb)
-        // ⌘V on the Mac takes a picture straight from the clipboard. iOS has no
-        // paste command for a view, so the composer offers a button instead.
-        #if os(macOS)
-        .onPasteCommand(of: PlatformImage.pasteTypes) { providers in
-            Task { await model.attachPastedImage(from: providers) }
-        }
-        #endif
     }
 }
 

@@ -17,9 +17,10 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     private static let voiceDefaultsKey = "speechVoiceIdentifier"
     private static let vocabularyDefaultsKey = "recognitionVocabulary"
     private static let timeoutDefaultsKey = "listeningTimeout"
+    private static let pauseDefaultsKey = "utterancePause"
     /// Long enough to gather a thought, short enough that the microphone is not
     /// simply always on.
-    static let defaultListeningTimeout: Double = 10
+    static let defaultListeningTimeout: Double = 30
     static let defaultVocabulary = ["Skyr", "JARVIS", "Hermes", "Tailscale", "Marlon"]
     private static let preferredGermanVoiceNames = [
         "Yannick", "Martin", "Markus", "Daniel", "Anna"
@@ -36,6 +37,11 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     /// AppModel answers whether a turn is still running. The microphone must
     /// outlive the silence while JARVIS is thinking, or barge-in is pointless.
     var shouldKeepListening: (() -> Bool)?
+    /// How long a pause may be before the sentence counts as finished. 850ms
+    /// cut people off mid-thought; a breath between clauses is not an ending.
+    @Published var utterancePause: Double = UserDefaults.standard.object(forKey: "utterancePause") as? Double ?? 1.6 {
+        didSet { UserDefaults.standard.set(utterancePause, forKey: Self.pauseDefaultsKey) }
+    }
     /// Seconds of silence after which listening stops. Zero means never.
     @Published var listeningTimeout: Double = UserDefaults.standard.object(forKey: "listeningTimeout") as? Double
         ?? SpeechController.defaultListeningTimeout {
@@ -54,6 +60,12 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     private var queuedSentences: [String] = []
     private var streamIsOpen = false
     private var streamClient: JarvisAPIClient?
+    @Published var playbackSpeed = SpeechPlaybackSpeed.load() {
+        didSet {
+            playbackSpeed.save()
+            neuralPlayer.playbackSpeed = playbackSpeed
+        }
+    }
     @Published var usesNaturalVoice = UserDefaults.standard.object(forKey: "usesNaturalVoice") as? Bool ?? true {
         didSet { UserDefaults.standard.set(usesNaturalVoice, forKey: "usesNaturalVoice") }
     }
@@ -105,6 +117,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         }
         super.init()
         synthesizer.delegate = self
+        neuralPlayer.playbackSpeed = playbackSpeed
     }
 
     private static func storedVocabulary() -> [String] {
@@ -184,8 +197,27 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
                 errorMessage = "Kein Mikrofon verfügbar."
                 return
             }
+            // Echo cancellation turns this Mac's input into seven channels
+            // tagged DiscreteInOrder — and measurement shows all seven carry
+            // the identical microphone signal. AVAudioConverter cannot map that
+            // layout to mono and silently emits zeroes, which is what left the
+            // recogniser deaf. Copying channel 0 keeps the signal byte for byte.
+            let monoFormat = format.channelCount > 1
+                ? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate,
+                                channels: 1, interleaved: false)
+                : nil
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                request.append(buffer)
+                guard let monoFormat, !buffer.format.isInterleaved,
+                      let source = buffer.floatChannelData,
+                      let mono = AVAudioPCMBuffer(pcmFormat: monoFormat,
+                                                  frameCapacity: buffer.frameLength),
+                      let destination = mono.floatChannelData else {
+                    request.append(buffer)
+                    return
+                }
+                mono.frameLength = buffer.frameLength
+                destination[0].update(from: source[0], count: Int(buffer.frameLength))
+                request.append(mono)
             }
             tapInstalled = true
             engine.prepare()
@@ -246,8 +278,9 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
 
     private func scheduleEndOfUtterance(id: UUID) {
         silenceTask?.cancel()
+        let pause = utterancePause
         silenceTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
+            do { try await Task.sleep(for: .seconds(pause)) } catch { return }
             guard let self, self.captureID == id, self.isListening else { return }
             self.completeUtterance()
         }
@@ -312,6 +345,10 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         } else if !streamIsOpen {
             streamClient = nil
             bargeIn.stoppedSpeaking()
+            // The countdown kept rescheduling itself all through the answer, so
+            // whatever was left of it was arbitrary — sometimes a full pause,
+            // sometimes none. Your turn to speak starts now, so it starts now.
+            if isListening { scheduleIdleStop() }
             onSpeechFinished?()
         }
     }
@@ -411,7 +448,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
             ?? AVSpeechSynthesisVoice(language: "de-DE")
         // A neutral pitch and small pauses sound less synthetic than the old,
         // deliberately lowered voice. The voice asset itself still matters most.
-        utterance.rate = 0.47
+        utterance.rate = playbackSpeed.systemSpeechRate
         utterance.pitchMultiplier = 1.0
         utterance.preUtteranceDelay = 0.02
         utterance.postUtteranceDelay = 0.08

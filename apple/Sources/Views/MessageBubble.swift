@@ -9,8 +9,19 @@ struct MessageBubble: View {
         model.backgroundChoice.foregroundColor
     }
 
+    @ViewBuilder
     var body: some View {
-        HStack {
+        if message.role == .system {
+            HStack {
+                Text(message.text)
+                    .font(model.appFont(.caption))
+                    .foregroundStyle(ink.opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.vertical, 10)
+        } else {
+            HStack {
             if message.role == .user { Spacer(minLength: 42) }
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 7) {
                 Text(message.role == .jarvis ? "JARVIS" : message.role == .user ? "YOU" : "SYSTEM")
@@ -32,13 +43,14 @@ struct MessageBubble: View {
                 }
             }
             if message.role != .user { Spacer(minLength: 42) }
+            }
+            .padding(16)
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(ink.opacity(message.role == .user ? 0.10 : 0.055))
+            }
+            .padding(.vertical, 5)
         }
-        .padding(16)
-        .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(ink.opacity(message.role == .user ? 0.10 : 0.055))
-        }
-        .padding(.vertical, 5)
     }
 }
 
@@ -51,25 +63,12 @@ struct AttachmentStrip: View {
     @EnvironmentObject private var model: AppModel
 
     private var pictures: [MessageAttachment] { attachments.filter { $0.kind == .image } }
-    private var links: [MessageAttachment] { attachments.filter { $0.kind != .image } }
+    private var links: [MessageAttachment] { attachments.filter { $0.kind != .image && $0.isDisplayable } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(pictures) { picture in
-                AsyncImage(url: URL(string: picture.url)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFit()
-                    case .failure:
-                        // Say the picture did not load rather than leaving a hole.
-                        Label("Bild nicht ladbar", systemImage: "photo")
-                            .font(model.appFont(.caption2))
-                            .foregroundStyle(ink.opacity(0.5))
-                            .padding(.vertical, 10)
-                    default:
-                        ProgressView().tint(ink).frame(height: 60)
-                    }
-                }
+                InlineAttachmentImage(picture: picture, ink: ink)
                 .frame(maxWidth: .infinity, maxHeight: 320)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .accessibilityLabel(picture.title.isEmpty ? "Bild" : picture.title)
@@ -104,5 +103,74 @@ struct AttachmentStrip: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct InlineAttachmentImage: View {
+    let picture: MessageAttachment
+    let ink: Color
+    @State private var preview: CGImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let preview {
+                Image(decorative: preview, scale: 1).resizable().scaledToFit()
+            } else if failed {
+                Label("Bild nicht ladbar", systemImage: "photo")
+                    .font(.caption2).foregroundStyle(ink.opacity(0.5)).padding(.vertical, 10)
+            } else {
+                ProgressView().tint(ink).frame(height: 60)
+            }
+        }
+        .task(id: picture.url) {
+            preview = nil
+            failed = false
+            do {
+                let url = picture.url
+                // Decode away from the UI actor; cancellation follows the view.
+                let task = Task.detached { try await Self.load(url) }
+                let image = try await withTaskCancellationHandler(operation: {
+                    try await task.value
+                }, onCancel: { task.cancel() })
+                try Task.checkCancellation()
+                preview = image
+            } catch {
+                if !Task.isCancelled { failed = true }
+            }
+        }
+    }
+
+    private static func load(_ reference: String) async throws -> CGImage {
+        var data: Data
+        if reference.hasPrefix("data:") {
+            guard let decoded = InlineImageData.decode(reference) else { throw URLError(.cannotDecodeContentData) }
+            data = decoded
+        } else {
+            guard let url = URL(string: reference),
+                  ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+                  url.host != nil else { throw URLError(.unsupportedURL) }
+            // Public image downloads carry neither the bridge token nor cookies.
+            let config = URLSessionConfiguration.ephemeral
+            config.httpShouldSetCookies = false
+            config.timeoutIntervalForRequest = 30
+            let session = URLSession(configuration: config)
+            defer { session.invalidateAndCancel() }
+            let (bytes, response) = try await session.bytes(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  InlineImageData.mimeTypes.contains(http.mimeType ?? ""),
+                  http.expectedContentLength <= InlineImageData.maxBytes else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            data = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < InlineImageData.maxBytes else { throw URLError(.dataLengthExceedsMaximum) }
+                data.append(byte)
+            }
+        }
+        try Task.checkCancellation()
+        guard let image = PlatformImage.inlinePreview(from: data) else { throw URLError(.cannotDecodeContentData) }
+        return image
     }
 }

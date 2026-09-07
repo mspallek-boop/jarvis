@@ -19,12 +19,25 @@ struct JarvisAPIClient {
         let duration_ms: Int?
         let attachments: [Attachment]?
 
+        enum CodingKeys: String, CodingKey { case text, tools, run_id, duration_ms, attachments }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            let extracted = InlineImageData.extract(from: try values.decode(String.self, forKey: .text))
+            guard extracted.text.utf8.count < 1_000_000 else { throw ClientError.server("Antwort zu groß.") }
+            text = extracted.text
+            tools = try values.decode([Tool].self, forKey: .tools)
+            run_id = try values.decodeIfPresent(String.self, forKey: .run_id)
+            duration_ms = try values.decodeIfPresent(Int.self, forKey: .duration_ms)
+            attachments = (try values.decodeIfPresent([Attachment].self, forKey: .attachments) ?? [])
+                + extracted.attachments.map { Attachment(kind: $0.kind.rawValue, url: $0.url, title: $0.title) }
+        }
+
         var messageAttachments: [MessageAttachment] {
-            (attachments ?? []).compactMap { item in
+            MessageAttachment.bounded((attachments ?? []).compactMap { item in
                 guard let kind = MessageAttachment.Kind(rawValue: item.kind) else { return nil }
-                let attachment = MessageAttachment(kind: kind, url: item.url, title: item.title)
-                return attachment.isDisplayable ? attachment : nil
-            }
+                return MessageAttachment(kind: kind, url: item.url, title: item.title)
+            })
         }
     }
 
@@ -40,6 +53,62 @@ struct JarvisAPIClient {
     struct HealthResponse: Decodable {
         let ok: Bool
         let mac: String?
+    }
+
+    struct RunStatus: Decodable, Identifiable, Equatable {
+        let client_run_id: String
+        let phase: String
+        let tool: String
+        let conversation: String
+        let seconds: Double
+
+        var id: String { client_run_id }
+
+        var phaseLabel: String {
+            switch phase {
+            case "queued": return "wartet"
+            case "thinking": return "denkt nach"
+            case "answering": return "antwortet"
+            case "tool":
+                let name = tool.lowercased()
+                if name.contains("search") || name.contains("web") { return "Web-Suche" }
+                return tool.isEmpty ? "arbeitet" : tool
+            case "stopping": return "bricht ab"
+            default: return "arbeitet"
+            }
+        }
+
+        var elapsedLabel: String {
+            let total = max(0, Int(seconds.rounded(.down)))
+            return total >= 3600
+                ? String(format: "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
+                : String(format: "%d:%02d", total / 60, total % 60)
+        }
+    }
+
+    struct RunsResponse: Decodable {
+        let runs: [RunStatus]
+        let count: Int
+    }
+
+    struct Notification: Decodable, Identifiable, Equatable {
+        let id: Int
+        let kind: String
+        let title: String
+        let text: String
+        let at: Double
+
+        var line: String {
+            let subject = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return [subject, detail].filter { !$0.isEmpty }.joined(separator: " ")
+        }
+    }
+
+    struct NotificationsResponse: Decodable {
+        let notifications: [Notification]
+        let unread: Int
+        let latest: Int
     }
 
     struct Activity: Decodable {
@@ -148,6 +217,26 @@ struct JarvisAPIClient {
         return try JSONDecoder().decode(HealthResponse.self, from: data)
     }
 
+    func runs() async throws -> RunsResponse {
+        let data = try await request(path: "runs", method: "GET", body: Optional<String>.none, timeout: 8)
+        return try JSONDecoder().decode(RunsResponse.self, from: data)
+    }
+
+    func notifications(since: Int, unreadOnly: Bool = false) async throws -> NotificationsResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "since", value: String(max(0, since))),
+            URLQueryItem(name: "unread", value: unreadOnly ? "1" : "0")
+        ]
+        let data = try await rawRequest(url: components.url!, method: "GET", timeout: 8)
+        return try JSONDecoder().decode(NotificationsResponse.self, from: data)
+    }
+
+    func markNotificationsRead(through: Int) async throws {
+        let _: Data = try await request(path: "notifications/read", method: "POST",
+                                        body: ["through": through], timeout: 8)
+    }
+
     func wake() async throws {
         let _: Data = try await request(path: "wake", method: "POST", body: ["wake": true], timeout: 100)
     }
@@ -246,11 +335,27 @@ struct JarvisAPIClient {
               http.value(forHTTPHeaderField: "Content-Type")?.contains("application/x-ndjson") == true else {
             throw ClientError.server("Gesprächsverbindung fehlgeschlagen (\(http.statusCode)).")
         }
+        return try await Self.consumeChatStream(bytes, onFrame: onFrame)
+    }
+
+    static let maxChatFrameBytes = 16 * 1024 * 1024
+
+    /// Limit the buffer before constructing a line, including an unterminated
+    /// malicious frame. The same parser is exercised by the offline tests.
+    static func consumeChatStream<Bytes: AsyncSequence>(_ bytes: Bytes,
+        onFrame: (ChatFrame) -> Void) async throws -> ChatResponse where Bytes.Element == UInt8 {
         var textBytes = 0
-        for try await line in bytes.lines {
+        var line = Data()
+        for try await byte in bytes {
             try Task.checkCancellation()
-            guard line.utf8.count < 800_000 else { throw ClientError.server("Antwort zu groß.") }
-            let frame = try JSONDecoder().decode(ChatFrame.self, from: Data(line.utf8))
+            if byte != 10 {
+                guard line.count < maxChatFrameBytes else { throw ClientError.server("Antwort zu groß.") }
+                line.append(byte)
+                continue
+            }
+            if line.isEmpty { continue }
+            let frame = try JSONDecoder().decode(ChatFrame.self, from: line)
+            line.removeAll(keepingCapacity: true)
             switch frame.type {
             case "delta", "activity":
                 textBytes += frame.text?.utf8.count ?? 0
@@ -281,7 +386,7 @@ struct JarvisAPIClient {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await perform(request)
+        let (data, response) = try await perform(request, maxBytes: path == "chat" ? Self.maxChatFrameBytes : nil)
         guard let http = response as? HTTPURLResponse else { throw ClientError.server("Keine gültige Serverantwort.") }
         if http.statusCode == 401 { throw ClientError.unauthorized }
         guard (200..<300).contains(http.statusCode) else {
@@ -307,8 +412,19 @@ struct JarvisAPIClient {
         return data
     }
 
-    private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    private func perform(_ request: URLRequest, maxBytes: Int? = nil) async throws -> (Data, URLResponse) {
         do {
+            if let maxBytes {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard response.expectedContentLength <= maxBytes else { throw ClientError.server("Antwort zu groß.") }
+                var data = Data()
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    guard data.count < maxBytes else { throw ClientError.server("Antwort zu groß.") }
+                    data.append(byte)
+                }
+                return (data, response)
+            }
             return try await URLSession.shared.data(for: request)
         } catch let error as URLError where error.code == .timedOut {
             throw ClientError.timedOut

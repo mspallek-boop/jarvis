@@ -6,7 +6,10 @@ enum SpeechText {
     /// only a markdown link's visible words.
     static func withoutLinks(_ text: String) -> String {
         var output = text.replacingOccurrences(
-            of: #"!\[[^\]\n]*\]\((?:https?://)[^\s)]+\)"#,
+            of: #"!\[[^\]\n]*\]\((?:https?://|data:)[^\s)]+\)"#,
+            with: "", options: .regularExpression)
+        output = output.replacingOccurrences(
+            of: #"MEDIA:\s*[^\n\r]*"#,
             with: "", options: .regularExpression)
         output = output.replacingOccurrences(
             of: #"\[([^\]\n]*)\]\((?:https?://)[^\s)]+\)"#,

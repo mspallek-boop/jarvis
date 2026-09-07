@@ -50,6 +50,18 @@ struct SettingsView: View {
                     Button("Stimmen neu laden") {
                         Task { await model.loadVoices() }
                     }
+                    Picker("Sprechtempo", selection: Binding(
+                        get: { model.speech.playbackSpeed },
+                        set: { model.speech.playbackSpeed = $0 }
+                    )) {
+                        ForEach(SpeechPlaybackSpeed.allCases) { speed in
+                            Text(speed.label).tag(speed)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text("Gilt auf diesem Gerät. Die natürliche Stimme ändert ihr Tempo sofort, die Systemstimme ab dem nächsten Satz. 1× ist das normale Tempo.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Button("Stimme testen") {
                         let client = try? model.makeClient()
                         model.speech.speak("Guten Abend, sir. JARVIS ist bereit. Womit darf ich helfen?", neuralClient: client)
@@ -61,6 +73,19 @@ struct SettingsView: View {
                     Text("JARVIS hört während des Vorlesens weiter zu und hält an, sobald du zu sprechen beginnst. In lauter Umgebung besser aus.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Picker("Redepause bis zum Senden", selection: Binding(
+                        get: { model.speech.utterancePause },
+                        set: { model.speech.utterancePause = $0 }
+                    )) {
+                        Text("0,8 Sekunden").tag(0.8)
+                        Text("1,6 Sekunden").tag(1.6)
+                        Text("2,5 Sekunden").tag(2.5)
+                        Text("4 Sekunden").tag(4.0)
+                    }
+                    .pickerStyle(.menu)
+                    Text("So lange darfst du stocken, ohne dass JARVIS den Satz für beendet hält. Kürzer heißt schneller, aber er fällt dir öfter ins Wort.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Picker("Zuhören endet nach", selection: Binding(
                         get: { model.speech.listeningTimeout },
                         set: { model.speech.listeningTimeout = $0 }
@@ -68,10 +93,11 @@ struct SettingsView: View {
                         Text("10 Sekunden").tag(10.0)
                         Text("30 Sekunden").tag(30.0)
                         Text("2 Minuten").tag(120.0)
+                        Text("5 Minuten").tag(300.0)
                         Text("Nie").tag(0.0)
                     }
                     .pickerStyle(.menu)
-                    Text("Nach dieser Stille schaltet das Mikrofon ab. Während JARVIS denkt oder spricht, läuft es weiter. Tippe auf den Orb, um wieder zu starten.")
+                    Text("Nach dieser Stille schaltet das Mikrofon ab. Während JARVIS denkt oder spricht, läuft es weiter, und die Zeit beginnt erst, wenn er ausgeredet hat. Tippe auf den Orb, um wieder zu starten.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 4) {

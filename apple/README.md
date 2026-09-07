@@ -4,6 +4,41 @@ Eine gemeinsame SwiftUI-Codebasis erzeugt zwei native Apps. Beide sprechen mit
 der kleinen Bridge auf dem Mac; Hermes- und Modellschlüssel werden niemals in
 der App gespeichert.
 
+## Sprechtempo
+
+Das Tempo lässt sich auch direkt oben im Chat über **1×** ändern, zum Beispiel
+auf **1,25×** oder **1,5×**. Daneben schaltet der **Lautsprecher-Button** die
+Sprachausgabe stumm: Die laufende Antwort stoppt sofort, neue Antworten bleiben
+stumm, bis der Ton wieder eingeschaltet wird. Die Auswahl bleibt nach einem
+Neustart erhalten; das Mikrofon wird separat über den Sprachmodus gesteuert.
+
+Unter **Einstellungen → Sprache → Sprechtempo** stehen auf Mac und iPhone
+**Langsam (0,75×)**, **Normal (1×)**, **Schnell (1,25×)** und
+**Sehr schnell (1,5×)** zur Auswahl. Standard ist **Normal**; die Auswahl wird
+pro Gerät gespeichert. **Stimme testen** verwendet dieselbe Einstellung.
+
+Bei der natürlichen Stimme wirkt die Änderung sofort auf die laufende
+Wiedergabe, ohne die Tonhöhe zu ändern. Die Systemstimme (auch beim Ausfall
+der natürlichen Stimme) übernimmt das Tempo ab dem nächsten Satz bzw. beim
+nächsten Vorlesen. Ihre genaue Geschwindigkeit hängt von der Apple-Stimme ab.
+Die Einstellung ändert weder die Spracherkennung noch die Redepause bis zum
+Senden und benötigt keine Änderung an der Bridge.
+
+Die eigenständigen Swift-Tests einschließlich Offline-Audiorendering lassen
+sich auf dem Mac ohne Server, Mikrofon oder Lautsprecherausgabe ausführen:
+
+```bash
+bash apple/scripts/test_speech.sh
+```
+
+Die Testprogramme werden unter `/tmp` abgelegt. Die Audiotests prüfen Dauer,
+Tonhöhe, Tempoänderungen während der Wiedergabe und Stoppen am tatsächlichen
+Audio-Graphen des Players.
+Falls die Ausführungsumgebung keine Core-Audio-Komponenten bereitstellt,
+führt `bash apple/scripts/test_speech.sh --skip-audio` nur die Tests ohne
+Audio-Rendering aus und meldet die ausgelassenen Audiotests ausdrücklich.
+Testpräferenzen bleiben im Arbeitsspeicher.
+
 ## Projekt erzeugen
 
 ```bash
@@ -149,8 +184,11 @@ Nur `http` und `https` werden dargestellt.
 
 ### Bilder einfügen (Build 11)
 
-Auf dem Mac mit **⌘V** direkt ins Eingabefeld; ein Screenshot aus der
-Zwischenablage wird dabei automatisch nach PNG gewandelt. Auf dem iPhone
+Auf dem Mac mit **⌘V** direkt in der Hauptansicht, auch im Sprachmodus: Die
+Texteingabe öffnet sich automatisch. Screenshots, kopierte Bilder und Bilddateien
+aus dem Finder werden nach PNG gewandelt. Normales Texteinfügen und Eingaben in
+den Einstellungen bleiben unverändert. Ein Bild kann auch ohne Begleittext
+gesendet werden; JARVIS beschreibt es dann. Auf dem iPhone
 erscheint neben dem Senden-Knopf ein Bildsymbol, sobald ein Bild in der
 Zwischenablage liegt. Das angehängte Bild zeigt sich als kleine Vorschau über
 dem Eingabefeld und lässt sich dort wieder entfernen.
@@ -158,6 +196,10 @@ dem Eingabefeld und lässt sich dort wieder entfernen.
 Das Bild geht an den Mac und liegt in `~/.hermes/jarvis-uploads`. JARVIS sieht
 es sich mit `vision_analyze` an. Es gehört nur zur abgeschickten Nachricht;
 danach ist das Eingabefeld wieder leer.
+
+`bash apple/scripts/test_clipboard.sh` prüft die Bildkonvertierung, Finder-Dateien
+und unveränderten Text auf einer privaten Test-Zwischenablage. Die tatsächliche
+Zwischenablage bleibt dabei erhalten.
 
 ### Zuhören endet von selbst (Build 12)
 

@@ -4,14 +4,19 @@ import Foundation
 /// Plays authenticated PCM chunks as they arrive; never stores speech on disk.
 @MainActor
 final class NeuralSpeechPlayer {
-    private let engine = AVAudioEngine()
+    private let engine: AVAudioEngine
     private let player = AVAudioPlayerNode()
+    private let timePitch = AVAudioUnitTimePitch()
     private let format = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1)!
     private var generation = UUID()
     /// While barge-in listens during playback, SpeechController owns the audio
     /// session as .playAndRecord. Claiming .playback here would end recording.
     var managesAudioSession = true
     private(set) var hasScheduledAudio = false
+    /// Updating the running effect also changes buffers already scheduled.
+    var playbackSpeed: SpeechPlaybackSpeed = .normal {
+        didSet { timePitch.rate = Float(playbackSpeed.rawValue) }
+    }
 
     private struct Frame: Decodable {
         let type: String
@@ -24,9 +29,14 @@ final class NeuralSpeechPlayer {
         case unavailable, invalidStream
     }
 
-    init() {
+    init(engine: AVAudioEngine = AVAudioEngine()) {
+        self.engine = engine
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.attach(timePitch)
+        timePitch.rate = Float(playbackSpeed.rawValue)
+        timePitch.pitch = 0
+        engine.connect(player, to: timePitch, format: format)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
     }
 
     func stop() {
