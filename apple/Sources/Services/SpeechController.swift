@@ -65,6 +65,9 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     private var speechGeneration = UUID()
     private var queuedSentences: [String] = []
     private var streamIsOpen = false
+    /// True once this stream has actually produced sound. Until then nothing is
+    /// coming out of the speaker, so what the microphone hears is the user.
+    private var hasPlayedInStream = false
     private var streamClient: JarvisAPIClient?
     @Published var playbackSpeed = SpeechPlaybackSpeed.load() {
         didSet {
@@ -245,7 +248,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
                     guard let self, self.captureID == id, self.isListening else { return }
                     if let result {
                         let text = result.bestTranscription.formattedString
-                        if self.isSpeaking || self.streamIsOpen {
+                        if self.echoIsInFlight {
                             // While JARVIS talks — and in the gaps between two
                             // streamed sentences, where its echo is still
                             // arriving — a partial result is only interesting
@@ -314,6 +317,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     func stopSpeaking() {
         queuedSentences = []
         streamIsOpen = false
+        hasPlayedInStream = false
         // Nothing is coming out of the speaker any more, so the user's words
         // must stop being mistaken for our own echo.
         bargeIn.stoppedSpeaking()
@@ -338,8 +342,13 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     }
 
     func beginStream(client: JarvisAPIClient) {
-        suspend()
+        // Deliberately not `suspend()`. Closing the capture here is what made
+        // the microphone deaf for the whole thinking phase: the answer had not
+        // started yet, so there was no echo to protect against — only a user
+        // who could not hand over a second task while the first one ran.
+        stopSpeaking()
         streamIsOpen = true
+        hasPlayedInStream = false
         streamClient = client
     }
 
@@ -380,6 +389,12 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         play(text, neuralClient: neuralClient)
     }
 
+    /// True only while our own voice can still be arriving at the microphone:
+    /// during playback, and in the gaps between two sentences of one stream.
+    /// A stream that has not spoken yet is JARVIS thinking, and speech heard
+    /// then is a new task, not an interruption.
+    private var echoIsInFlight: Bool { isSpeaking || (streamIsOpen && hasPlayedInStream) }
+
     /// True while the microphone is meant to keep running through playback.
     private var listensWhileSpeaking: Bool { interruptsBySpeaking && bargeInAvailable }
 
@@ -403,6 +418,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
 
     private func play(_ text: String, neuralClient: JarvisAPIClient?) {
         errorMessage = nil
+        hasPlayedInStream = true
         if listensWhileSpeaking {
             bargeIn.nowSpeaking(text)
         } else {

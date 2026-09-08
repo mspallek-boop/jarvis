@@ -773,7 +773,9 @@ final class AppModel: ObservableObject {
             await speech.listenThrough()
             return
         }
-        guard !isWorking, !speech.isSpeaking else { return }
+        // Not gated on `isWorking` any more: a task that is still running is
+        // precisely when the user may want to hand over the next one.
+        guard !speech.isSpeaking else { return }
         await speech.start()
     }
 
@@ -784,8 +786,12 @@ final class AppModel: ObservableObject {
         // Something already running means this is a second task, so it gets a
         // lane of its own instead of queueing behind the first.
         let runsInParallel = !localRuns.isEmpty
-        if speech.interruptsBySpeaking && voiceModeEnabled && voiceForeground {
-            // Keep hearing the user through thinking and speaking alike.
+        if voiceModeEnabled && voiceForeground {
+            // Keep hearing the user through thinking and speaking alike. Even
+            // with barge-in switched off the microphone stays open while JARVIS
+            // thinks — thinking is silent, so there is no echo to guard against,
+            // and that is exactly the window in which a second task is handed
+            // over. `play` closes the capture again once the answer talks.
             await speech.listenThrough()
         } else if !runsInParallel {
             speech.suspend()
