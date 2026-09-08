@@ -21,8 +21,10 @@ enum WindowTransition {
     /// out, so it need not settle.
     private static let leaving = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.9, 0.35)
     /// Arriving with a small overshoot past 1 — that is the "pop", and it is
-    /// what a spring does that an ease-out cannot.
-    private static let arriving = CAMediaTimingFunction(controlPoints: 0.22, 1.2, 0.36, 1)
+    /// what a spring does that an ease-out cannot. Shared with the pill's own
+    /// arrival from the Dock: two things that both mean "here I am" must move
+    /// the same way, or the app has two accents.
+    static let arriving = CAMediaTimingFunction(controlPoints: 0.22, 1.2, 0.36, 1)
     private static let restoredKey = "mainWindowFrameBeforeCollapse"
 
     private static var reduceMotion: Bool {

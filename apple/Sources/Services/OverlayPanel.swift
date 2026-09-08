@@ -59,6 +59,52 @@ final class OverlayPanelController {
         panel?.orderOut(nil)
     }
 
+    /// Springs the pill up out of the Dock.
+    ///
+    /// `show()` is for the fold, where the window animates into the pill's
+    /// rectangle and the pill only has to be standing there when it arrives.
+    /// This is the other case: JARVIS was away entirely, there is no window to
+    /// fold, and something has to make the appearance mean something. Coming up
+    /// out of the Dock says where he was.
+    ///
+    /// It is the Dock's edge, not the app's own icon: AppKit exposes no frame
+    /// for a Dock tile, and the Accessibility route needs a permission that can
+    /// be revoked. The difference between the icon and the edge below the pill
+    /// is a few hundred milliseconds of travel nobody can name afterwards; a
+    /// missing permission would be a dead animation.
+    func popUp(model: AppModel) {
+        let panel = panel ?? make(model: model)
+        self.panel = panel
+        let destination = NSRect(origin: storedOrigin(for: panel), size: Self.size)
+
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            panel.setFrame(destination, display: true)
+            panel.orderFrontRegardless()
+            return
+        }
+
+        // The screen's own bottom edge, below whatever the visible frame
+        // starts at — that gap is the Dock, and starting inside it is what
+        // makes the pill look like it came from there rather than faded in.
+        let screen = panel.screen ?? NSScreen.main
+        let bottom = screen?.frame.minY ?? destination.minY
+        var start = destination
+        start.origin.y = bottom - destination.height
+        // Narrower on the way up, so it widens as it rises. A rectangle that
+        // only slides reads as a drawer; one that also grows reads as arriving.
+        start = start.insetBy(dx: destination.width * 0.18, dy: 0)
+
+        panel.setFrame(start, display: false)
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.42
+            context.timingFunction = WindowTransition.arriving
+            panel.animator().setFrame(destination, display: true)
+            panel.animator().alphaValue = 1
+        }
+    }
+
     private func make(model: AppModel) -> NSPanel {
         let panel = KeyablePanel(
             contentRect: NSRect(origin: .zero, size: Self.size),

@@ -311,6 +311,53 @@ Die SOUL sagt dazu: lesen ist frei, **weitergeben nicht**. Etwas aus einem Chat
 in einen anderen Chat, eine Mail oder eine Datei zu zitieren ist eine eigene
 Handlung und braucht die übliche Rückfrage.
 
+### 13. Der Hotkey weckt JARVIS, wenn er ganz weg ist
+**Erledigt, 2026-09-08. Am laufenden Fenster durchgespielt.**
+
+Wunsch: Fenster zu, JARVIS verschwunden — die rechte Befehlstaste holt ihn
+zurück, und die Pille kommt aus dem Dock hoch.
+
+**Der eigentliche Befund lag tiefer als erwartet.** Beim Nachstellen beendete
+sich die App, sobald das letzte Fenster zuging. Das ist SwiftUIs Vorgabe für
+eine `WindowGroup`, und damit war die Bitte in ihrer wörtlichen Form unmöglich:
+ein globaler Hotkey braucht einen laufenden Prozess. "JARVIS ist weg" und
+"JARVIS ist tot" waren von außen derselbe Zustand. Der fehlende Baustein war
+eine Zeile im Delegate — `applicationShouldTerminateAfterLastWindowClosed`
+gibt jetzt `false` zurück, wie Mail und Musik es auch tun. ⌘Q beendet weiterhin
+sauber.
+
+Darauf aufbauend:
+
+- **Der Hotkey ist scharf, wenn kein Fenster vorn steht.** Vorher hob ihn nur
+  das Zuklappen an; nach einem geschlossenen Fenster tat die Taste nichts und
+  das Dock-Symbol war der einzige Weg zurück. Die Taste ist das Einzige, was du
+  drücken kannst, ohne hinzusehen — also muss sie das Einzige sein, das immer
+  geht.
+- **Halten weckt die Pille, bevor das Mikrofon aufgeht.** In etwas
+  hineinzusprechen, das sich nicht zeigt, ist Sprechen ins Dunkle: du kannst
+  einen zuhörenden JARVIS nicht von einem kaputten unterscheiden.
+- **Sie springt aus dem Dock.** Nicht vom App-Symbol — AppKit gibt keinen
+  Rahmen für ein Dock-Icon heraus, und der Weg über die Bedienungshilfen hinge
+  an einer Berechtigung, die entzogen werden kann. Es ist die Dock-Kante direkt
+  unter dem Ruheplatz der Pille, mit derselben Federkurve wie das Aufklappen
+  des Fensters: zwei Dinge, die "hier bin ich" bedeuten, müssen sich gleich
+  bewegen.
+
+**Eine Regression, die ich mir selbst gebaut habe.** Die Pille kann jetzt ohne
+Fenster dahinter stehen — nach dem Wecken gibt es keines. `expand` setzte
+stillschweigend eines voraus und kehrte sonst wortlos zurück: die Pille
+verblasste und übrig blieb *nichts*, schlechter als der Ausgangszustand. Jetzt
+prüft `expandFromOverlay`, ob es überhaupt ein Fenster gibt, und lässt sonst
+über Launch Services ein neues bauen.
+
+Durchgespielt, in dieser Reihenfolge gemessen: Start 1 Fenster → Fenster zu
+0 Fenster, Prozess lebt → Taste halten 1 Panel (die Pille über dem Dock) →
+Dock-Klick 1 Fenster.
+
+**Eine Grenze bleibt:** nach einem echten ⌘Q ist der Prozess weg, und dann
+weckt keine Taste mehr etwas. Das ginge nur mit einem eigenen
+Hintergrunddienst — sag Bescheid, falls du das willst.
+
 ### 7. WhatsApp-Anrufe
 Nicht baubar. Die Bridge nutzt Baileys, und Baileys kann Anrufe nur
 **ablehnen** (`rejectCall`) — ausgehende Anrufe implementiert es nicht, und die

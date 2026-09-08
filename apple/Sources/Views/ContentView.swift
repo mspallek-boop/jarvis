@@ -135,6 +135,13 @@ struct ContentView: View {
         .task {
             await model.setVoiceForeground(true)
             await model.checkConnection()
+            #if os(macOS)
+            // A window built fresh — first launch, or the Dock reopening one
+            // the user had closed — hands the microphone back to the app.
+            // Push-to-talk belongs to the small mode, and a global key grab
+            // would fight the app's own handling while the window is in front.
+            model.updateHotkeyArming(mainWindowVisible: true)
+            #endif
         }
         .onChange(of: scenePhase) {
             if scenePhase == .background {
@@ -160,6 +167,13 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { note in
             guard !(note.object is NSPanel) else { return }
             model.collapseToOverlay()
+        }
+        // Closing the window is allowed to mean closed — no pill, nothing on
+        // screen. What it must not mean is unreachable: the key stays armed, so
+        // holding it wakes JARVIS and the pill comes up out of the Dock.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+            guard !(note.object is NSPanel) else { return }
+            model.updateHotkeyArming(mainWindowVisible: false)
         }
         #endif
     }

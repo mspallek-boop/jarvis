@@ -285,6 +285,28 @@ final class AppModel: ObservableObject {
         WindowTransition.collapse(into: overlayPanel.frame) {}
     }
 
+    /// Wake JARVIS when he is away entirely — no window, no pill.
+    ///
+    /// Closing the window is a legitimate thing to do, and it used to make him
+    /// unreachable: `hotkey.active` was raised only by the fold, so with no
+    /// window and no pill the key did nothing and the Dock icon was the only
+    /// way back. The key is the one thing the user can press without looking,
+    /// so it has to be the one thing that always works.
+    func wakeToOverlay() {
+        guard !overlayVisible else { return }
+        overlayPanel.popUp(model: self)
+        overlayPanel.onClick = { [weak self] in self?.expandFromOverlay() }
+        overlayVisible = true
+        hotkey.active = true
+    }
+
+    /// The key is armed exactly when the main window is not standing in front
+    /// of the user. Called from every path that opens or closes that window,
+    /// because "is JARVIS reachable" must not depend on which of them ran.
+    func updateHotkeyArming(mainWindowVisible: Bool) {
+        hotkey.active = overlayVisible || !mainWindowVisible
+    }
+
     /// Spring the window back out of the pill, centred.
     func expandFromOverlay() {
         guard overlayVisible else { return }
@@ -293,7 +315,17 @@ final class AppModel: ObservableObject {
         let source = overlayPanel.frame
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
-        WindowTransition.expand(from: source)
+        if WindowTransition.mainWindow() != nil {
+            WindowTransition.expand(from: source)
+        } else {
+            // The pill can now exist with no window behind it: the hotkey wakes
+            // it after the window was *closed*, not folded, and a closed window
+            // is deallocated. `expand` would find nothing and return silently —
+            // the pill would fade and leave nothing at all, which is worse than
+            // where we started. Asking Launch Services to open the running app
+            // delivers a reopen, and SwiftUI answers that by building a window.
+            NSWorkspace.shared.open(Bundle.main.bundleURL)
+        }
         // The pill fades while the window grows out of it, so for a moment both
         // occupy the same place — which is what sells one as becoming the other.
         overlayPanel.fadeOut(duration: WindowTransition.expandDuration * 0.5) {}
@@ -455,6 +487,10 @@ final class AppModel: ObservableObject {
         hotkey.onPressAndHold = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
+                // Before the microphone, the pill: talking to something with no
+                // sign of itself on screen is talking into the dark, and the
+                // user cannot tell a listening JARVIS from a broken one.
+                self.wakeToOverlay()
                 self.speech.setMicrophoneMuted(false)
                 await self.speech.start()
             }
@@ -471,6 +507,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if on {
+                    self.wakeToOverlay()
                     self.speech.setMicrophoneMuted(false)
                     await self.speech.start()
                 } else if let text = self.speech.stop() {

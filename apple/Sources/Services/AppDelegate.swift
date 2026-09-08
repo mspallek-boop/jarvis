@@ -15,6 +15,18 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
 
+    /// Closing the last window must not quit JARVIS.
+    ///
+    /// SwiftUI's `WindowGroup` terminates the app when its last window closes,
+    /// and that is the wrong ending for something that is meant to be summoned.
+    /// A global hotkey needs a live process; with the app gone, holding the key
+    /// cannot wake anything, and "JARVIS is away" and "JARVIS is dead" become
+    /// the same state from the user's side. Mail and Music stay running for the
+    /// same reason, and ⌘Q still quits properly.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         MainActor.assumeIsolated {
             // The pill is the window folded up, so unfolding it *is* the
