@@ -6,6 +6,9 @@ import SwiftUI
 @main
 struct JARVISApp: App {
     @StateObject private var model = AppModel()
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +16,12 @@ struct JARVISApp: App {
                 .environmentObject(model)
                 .preferredColorScheme(model.theme.colorScheme)
                 .tint(.blue)
+                #if os(macOS)
+                // The delegate is built by SwiftUI, so it cannot hold the model
+                // from its initialiser. Weakly, and here, is the one place the
+                // two are both available.
+                .onAppear { appDelegate.model = model }
+                #endif
         }
         #if os(macOS)
         .defaultSize(width: 920, height: 720)

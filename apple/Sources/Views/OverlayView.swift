@@ -26,10 +26,12 @@ struct OverlayView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Always animating, just slower when idle. A still grid reads as a
-            // dead screenshot, which is what made the first version look broken.
+            // Motion means work. The grid moves while JARVIS listens or thinks
+            // and is perfectly still otherwise — an idle pill that keeps
+            // morphing claims to be busy when it is asleep, and after the
+            // hundredth time it is just something twitching in the corner.
             OrbView(active: true, listening: listening,
-                    thinking: model.isWorking || !listening,
+                    thinking: model.isWorking,
                     size: 34, color: ink, columns: 3,
                     ignoresScenePhase: true)
                 .opacity(listening || model.isWorking ? 1 : 0.6)

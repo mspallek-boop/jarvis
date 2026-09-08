@@ -76,6 +76,10 @@ enum WindowTransition {
 
     static func expand(from source: NSRect) {
         guard let window = mainWindow() else { return }
+        // ⌘M leaves the window in the Dock rather than ordered out, and a
+        // miniaturized window ignores every order-front there is. Undoing that
+        // first is what makes the ⌘M path restore at all.
+        if window.isMiniaturized { window.deminiaturize(nil) }
         let destination = centredFrame(for: window, on: source)
         guard !reduceMotion else {
             window.setFrame(destination, display: true)

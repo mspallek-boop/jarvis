@@ -277,6 +277,11 @@ final class AppModel: ObservableObject {
         // JARVIS listens the way he always did, and a global key grab would
         // fight the app's own microphone handling.
         hotkey.active = true
+        // ⌘M reaches the guard above through two notifications whose order is
+        // not ours to choose, so the one that arrives first can still find
+        // `overlayVisible` false and suspend the voice. Re-asserting after the
+        // flag is set makes the outcome independent of that race.
+        Task { await setVoiceForeground(true) }
         WindowTransition.collapse(into: overlayPanel.frame) {}
     }
 
@@ -748,6 +753,16 @@ final class AppModel: ObservableObject {
     }
 
     func setVoiceForeground(_ active: Bool) async {
+        #if os(macOS)
+        // Folding the window away is not leaving. Every path that hides the
+        // main window — ⌘H, ⌘M, the fold, `onDisappear`, the scene going to
+        // background — ends up here with `false`, and `false` means
+        // `speech.suspend()`, which throws away the sentence queue and cuts off
+        // whatever is being read out mid-word. While the pill is up JARVIS is
+        // still on screen and still working, so the pill is the one case where
+        // "the window went away" must not be answered with "stop".
+        if !active && overlayVisible { return }
+        #endif
         voiceForeground = active
         if active {
             startStatusPolling()
