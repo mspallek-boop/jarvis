@@ -8,3 +8,7 @@ vom 2026-09-07.
 [x] WhatsApp-Antwort im Auge behalten -> Benachrichtigung in der App, live
 [x] WhatsApp empfangen               -> Schalter mit Zeitlimit, standardmaessig aus
 [ ] WhatsApp-Anrufe                  -> nicht baubar, Baileys kann nur ablehnen
+[x] Mac bedienen                     -> jarvis-mac.sh clip/copy/app, beide Wege live
+[x] Pille: Glyphe zappelt im Schlaf  -> animiert nur noch beim Zuhoeren/Denken
+[x] Pille: Dock oeffnet 2. Fenster   -> AppDelegate holt das gefaltete zurueck
+[x] Minimieren wuergt Stimme ab      -> setVoiceForeground ignoriert Verstecken bei Pille

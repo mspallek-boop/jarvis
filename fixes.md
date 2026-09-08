@@ -151,6 +151,95 @@ Aktuell steht alles auf `self-chat`, also aus.
 
 ## Offen
 
+### 10. Den Mac bedienen — "kopiere X aus Programm Y und schick es an Z"
+**Erledigt, 2026-09-08. Beide Wege, ohne dass du etwas erlauben musstest.**
+
+Neu ist `scripts/jarvis-mac.sh` mit vier Befehlen, die auf drei verschiedenen
+Berechtigungsstufen sitzen:
+
+    jarvis-mac.sh clip              # Zwischenablage lesen  (keine Berechtigung)
+    jarvis-mac.sh clip "text"       # Zwischenablage setzen (keine Berechtigung)
+    jarvis-mac.sh app               # Vordergrund-Programm   (Apple Events)
+    jarvis-mac.sh copy              # dort Cmd+C drücken     (Bedienungshilfen)
+    jarvis-mac.sh check             # welche Stufen offen sind
+
+**Korrektur meiner ersten Auskunft.** Ich hatte behauptet, für `copy` fehle
+Hermes die Berechtigung und du müsstest sie von Hand erteilen. Das war falsch:
+ich hatte den Symlink `~/.hermes/hermes-agent/venv/bin/python` gegen die
+TCC-Datenbank gehalten statt sein Ziel. Aufgelöst zeigt er auf
+`~/.local/share/uv/python/cpython-3.11.16-.../bin/python3.11`, und *der* steht
+dort mit `kTCCServiceAccessibility = 2` — erlaubt. Über die Bridge gegengeprüft:
+JARVIS selbst meldet alle drei Stufen offen. Es war nie etwas zu tun.
+
+(Nebenbefund aus derselben Abfrage: Vollzugriff auf die Festplatte steht für
+denselben Interpreter auf `0`, also ausdrücklich verweigert. Das ist kein
+Problem — `JARVIS_FILE_ROOTS` regelt Dateizugriff ohnehin enger — aber es
+erklärt, falls einmal ein Ordner wie `~/Library/Mail` unerreichbar ist.)
+
+Zwei Details, die den Unterschied zwischen "geht" und "brauchbar" machen:
+
+- `copy` **pollt**, bis sich die Zwischenablage ändert (bis 1,5 s), statt fest
+  zu warten. Ein natives Programm antwortet in 50 ms, ein Electron-Fenster
+  nicht. Ändert sich nichts, sagt das Skript das — es schickt nicht stillschweigend
+  den alten Inhalt als neuen weiter. Genau das wäre der Fehler gewesen, der dir
+  irgendwann ein Passwort in einen WhatsApp-Chat legt.
+- `check` benutzt `key code 63` (die Fn-Taste): für TCC ein echter Tastendruck,
+  aber einer, der nichts auslöst. Die Prüfung kann deine Arbeit nicht stören.
+
+End-to-End nachgewiesen: Text in TextEdit ausgewählt, `copy` liefert
+`Beweiszeile aus TextEdit.` zurück.
+
+Die SOUL kennt das jetzt (deployt nach `~/.hermes/SOUL.md`, Sicherung
+daneben) — mit der Regel, dass Lesen frei ist und **Senden weiterhin
+Rückfrage und Vorlesen verlangt**. Eine Zwischenablage kann ein Passwort
+enthalten, und JARVIS ist der, der vorher nicht hingesehen hat.
+
+### 11. Das kleine Fenster — drei Sachen, die es falsch machte
+**Erledigt, 2026-09-08. Beide Targets bauen, 186 Python-Tests grün.**
+
+**Die Glyphe zappelte im Schlaf.** In `OverlayView` stand
+`thinking: model.isWorking || !listening` — das `|| !listening` heißt wörtlich
+"animiere immer, wenn du gerade nicht zuhörst", also gerade im Ruhezustand. Der
+Kommentar daneben begründete es auch noch ("eine stehende Glyphe wirkt wie ein
+totes Standbild"). Das war die falsche Abwägung: Bewegung bedeutet Arbeit, und
+eine Pille, die im Leerlauf weitermorpht, behauptet beschäftigt zu sein,
+während sie schläft. Jetzt bewegt sie sich, während JARVIS zuhört oder denkt,
+und steht sonst still.
+
+**Der Dock-Klick öffnete ein zweites Fenster.** Die App hatte gar keinen
+`NSApplicationDelegate`, also beantwortete SwiftUI den Klick mit seinem
+Standardverhalten: kein *sichtbares* Fenster → baue ein neues aus der
+`WindowGroup`. Ein zusammengefaltetes Fenster ist genau dieser Fall — es ist
+`orderOut`, lebt aber weiter und hält die Unterhaltung. Ergebnis: ein leeres
+Duplikat vorn, das echte Fenster weiter zugeklappt.
+
+Neu ist `apple/Sources/Services/AppDelegate.swift` mit
+`applicationShouldHandleReopen`. `false` heißt "erledigt, bau nichts". Die
+Reihenfolge: ist die Pille oben, klappt der Klick sie auf (die Pille *ist* das
+Fenster); sonst wird das vorhandene Fenster nach vorn geholt. Nur wenn es
+wirklich keines gibt, darf SwiftUI eines bauen.
+
+Dazu ein zweiter Befund: `⌘M` legt das Fenster ins Dock statt es auszublenden,
+und ein ins Dock gelegtes Fenster ignoriert jedes `makeKeyAndOrderFront`. Ohne
+`deminiaturize` hätte der Klick auch mit Delegate nichts sichtbar getan.
+Steht jetzt an beiden Stellen, im Delegate und in `WindowTransition.expand`.
+
+**Minimieren schnitt JARVIS mitten im Satz ab.** Jeder Weg, der das Fenster
+versteckt — `⌘H`, `⌘M`, das Zuklappen, `onDisappear`, die Szene im Hintergrund —
+landet in `setVoiceForeground(false)`, und das ruft `speech.suspend()` →
+`stopSpeaking()`: Satzschlange weg, laufende Ausgabe abgewürgt. Schlimmer noch,
+die Antwort auf eine schon laufende Aufgabe wurde danach überhaupt nicht mehr
+vorgelesen, weil `voiceForeground` in der Bedingung dafür steht.
+
+Die Pille ist der eine Fall, in dem "das Fenster ist weg" nicht "hör auf"
+heißen darf: JARVIS ist weiter auf dem Schirm und weiter am Arbeiten. Der
+Wächter sitzt deshalb in `setVoiceForeground` selbst, dem einen Punkt, durch
+den alle diese Wege laufen. Weil `⌘M` ihn über zwei Benachrichtigungen
+erreicht, deren Reihenfolge nicht uns gehört, setzt `collapseToOverlay` den
+Zustand danach noch einmal ausdrücklich — sonst entscheidet ein Rennen darüber,
+ob dein Satz zu Ende gesprochen wird. Laufende Aufgaben waren nie betroffen;
+`chatTasks` wird nur beim Abschluss abgebrochen.
+
 ### 7. WhatsApp-Anrufe
 Nicht baubar. Die Bridge nutzt Baileys, und Baileys kann Anrufe nur
 **ablehnen** (`rejectCall`) — ausgehende Anrufe implementiert es nicht, und die
