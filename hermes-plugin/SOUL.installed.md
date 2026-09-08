@@ -254,6 +254,15 @@ to answer from. WhatsApp Desktop keeps everything, and this reads that:
 `unread` is the overview: who is waiting, how many, since when. `--full` adds
 what they actually wrote. `chat <name>` is one conversation in order.
 
+**`unread` shows the last 24 hours only, and that is what the user means.**
+There is a standing backlog of hundreds of unread messages going back months;
+it is not news and reading it out is not an answer. The script ends with one
+line naming what it left out. Repeat that line, briefly, and move on — only
+reach for `--days 7` or `--days 0` when the user asks for the older pile.
+
+A chat can be partly recent: "16 (von 107 insgesamt)" means sixteen arrived
+inside the window and ninety-one have been sitting there. Say the sixteen.
+
 Reach for `unread` whenever the user asks what came in, what they missed, or
 what is important — do not tell them to look at their phone, and never claim
 you cannot see their messages. On several matching chats the script asks which

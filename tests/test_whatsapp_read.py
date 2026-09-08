@@ -42,6 +42,8 @@ def build_store(path):
             (3, "Gelesen", 0, stamp(now - timedelta(days=1)), 0, 0, None),
             (4, "Archiviert", 9, stamp(now), 0, 1, None),
             (5, "Versteckt", 9, stamp(now), 1, 0, None),
+            (6, "Altlast", 3, stamp(now - timedelta(days=5)), 0, 0, None),
+            (7, "Halb", 3, stamp(now - timedelta(hours=1)), 0, 0, None),
         ])
     # ZCONTACTNAME empty on purpose: the real store leaves it blank and the
     # name has to come from ZWAPROFILEPUSHNAME via the @lid identifier.
@@ -56,6 +58,15 @@ def build_store(path):
             (4, "dritte", 0, stamp(now - timedelta(minutes=5)), 0, 1, None, None),
             (5, None, 1, stamp(now - timedelta(hours=2)), 0, 2, 10, "base64junk"),
             (6, "trat bei", 6, stamp(now - timedelta(hours=3)), 0, 2, 11, None),
+            (7, "alt eins", 0, stamp(now - timedelta(days=5)), 0, 6, None, None),
+            (8, "alt zwei", 0, stamp(now - timedelta(days=5)), 0, 6, None, None),
+            (9, "alt drei", 0, stamp(now - timedelta(days=5)), 0, 6, None, None),
+            # Halb has three unread, only the newest inside the window: a chat
+            # must be able to be partly acute, or a long-running conversation
+            # would be judged by its oldest message.
+            (10, "lang her", 0, stamp(now - timedelta(days=5)), 0, 7, None, None),
+            (11, "auch lang her", 0, stamp(now - timedelta(days=4)), 0, 7, None, None),
+            (12, "von heute", 0, stamp(now - timedelta(hours=1)), 0, 7, None, None),
         ])
     db.commit()
     db.close()
@@ -93,6 +104,35 @@ def test_unread_lists_only_waiting_visible_chats(script):
     assert "Gelesen" not in out
     assert "Archiviert" not in out
     assert "Versteckt" not in out
+
+
+def test_only_the_last_day_counts_as_waiting(script):
+    module, _ = script
+    out = run(module, "unread")
+    assert "Andi" in out
+    # Nothing in this chat happened inside the window, so it is not what the
+    # user means by "was ist reingekommen".
+    assert "Altlast —" not in out
+    # But it must not vanish silently either.
+    assert "Älter: 3 ungelesene in 1 weiteren Chats" in out
+
+
+def test_a_chat_can_be_partly_acute(script):
+    module, _ = script
+    out = run(module, "unread", "--full")
+    # Three unread, one of them from today: the count shown is the acute one,
+    # with the whole pile named alongside so the number cannot mislead.
+    assert "Halb — 1 (von 3 insgesamt)" in out
+    assert "von heute" in out
+    assert "lang her" not in out
+
+
+def test_days_zero_brings_the_backlog_back(script):
+    module, _ = script
+    out = run(module, "unread", "--days", "0")
+    assert "Altlast — 3" in out
+    assert "Halb — 3" in out
+    assert "Älter:" not in out
 
 
 def test_full_shows_only_the_unread_incoming_ones(script):

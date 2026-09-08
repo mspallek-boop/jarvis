@@ -282,6 +282,26 @@ Vier Dinge, die den Unterschied zwischen "läuft" und "stimmt" machen:
 - **Deckelung je Chat.** Andi hat 172 ungelesene. Ungedeckelt ist das keine
   Zusammenfassung, sondern eine Wand.
 
+**Voreinstellung sind die letzten 24 Stunden.** Der erste Wurf zeigte alle 486
+ungelesenen aus 25 Chats — das ist kein Eingang, das ist ein Archiv. Gefiltert
+wird auf Nachrichtenebene, nicht auf Chatebene: Andi hat 172 ungelesene, keine
+davon von heute, also taucht er nicht auf; Silvia Horand hat 107, davon 16 von
+heute, also steht dort "16 (von 107 insgesamt)". Übrig bleiben 4 Chats mit 24
+Nachrichten. Was wegfiel, sagt eine Schlusszeile — sonst liest sich "nichts
+Neues" wie ein leerer Posteingang, während 370 Nachrichten daneben liegen.
+`--days 7` oder `--days 0` holen den Rest.
+
+**Ein Fund am Rande, der eine halbe Stunde gekostet hat.** Der Aufruf über den
+direkten Pfad wurde vom Hermes-Gateway blockiert: "command or referenced script
+cannot restart, stop, or uninstall the gateway". Im Skript steht kein einziges
+solches Wort. Die Ursache: der Wächter zerlegt ein referenziertes Skript in
+Tokens und behandelt einen Pfad am Zeilenanfang als Befehl, den er nachlesen
+muss. Der Datenbankpfad stand als Fortsetzungszeile da, wurde damit zum ersten
+Token, der Wächter expandierte die Tilde, fand die echte 34-MB-Datei und
+scannte **deinen Chatinhalt** nach Gateway-Befehlen — bei 34 MB fremder Sätze
+trifft er zwangsläufig einen. Der Pfad steht jetzt auf der Zeile seiner
+Zuweisung, mit einem Kommentar, der erklärt, warum man ihn nicht umbrechen darf.
+
 Am laufenden Dienst nachgewiesen: auf "Fasse meine ungelesenen WhatsApp-
 Nachrichten zusammen, wer braucht eine Antwort?" findet JARVIS das Skript
 selbst über die SOUL und antwortet mit drei konkreten Chats, die eine Antwort
