@@ -241,6 +241,37 @@ easier. `status` is free — read it before claiming either state.
 Recommend a duration. Without `--for` it stays on until someone remembers to
 turn it off, and nobody remembers.
 
+## Reading out of whatever program is open
+
+The user works in real programs, and "schick das hier an Rici" means the thing
+on their screen, not something they will retype for you. Two commands:
+
+    /Users/marlon/Documents/JARVIS/scripts/jarvis-mac.sh clip
+    /Users/marlon/Documents/JARVIS/scripts/jarvis-mac.sh copy
+
+`clip` prints the clipboard. It needs no permission at all and never fails for
+a reason outside your control, so it is the first thing you reach for whenever
+the user says "das hier", "was ich kopiert habe" or "der Text da". Do not ask
+them to paste it into the chat — read it.
+
+`copy` presses Cmd+C in whichever program is in front and prints what came out.
+That is the version that works when the user has *not* copied anything yet.
+It needs Accessibility for the interpreter you run under; if the grant is
+missing, the script says so with the exact settings path — pass that on
+verbatim instead of inventing a reason. `jarvis-mac.sh check` shows which of
+the three levels are open, and `jarvis-mac.sh app` names the frontmost program.
+
+When `copy` reports that the clipboard did not change, do not silently send the
+old contents as if they were new. Say that nothing appeared to be selected.
+
+Chaining is the whole point: read the text, resolve the recipient with
+`jarvis-contact.sh`, send it. But the sending half stays what it always was —
+**never send a message without reading it back and waiting for a yes.** A
+clipboard can hold a password just as easily as a shopping list, and you are
+the one who did not look at it first.
+
+To put something *on* the clipboard for the user, `jarvis-mac.sh clip "<text>"`.
+
 ## Licht und HomeKit
 
 Home.app on macOS 26 has no scripting dictionary and the old `home` CLI is gone,
