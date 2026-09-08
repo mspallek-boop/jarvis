@@ -128,6 +128,34 @@ def test_without_a_duration_it_stays_on_until_told_otherwise(mode):
     assert keys(mode)["WHATSAPP_MODE"] == "bot"
 
 
+def test_morris_receive_window_is_owned_until_his_reply(mode):
+    contact = "4915129583256@s.whatsapp.net"
+    run(mode, "on", "--contact", contact, "--for", "48h", "--until-reply")
+    state = json.loads(Path(mode.STATE_PATH).read_text())
+    assert state["until_reply_contact"] == "4915129583256"
+    assert keys(mode)["WHATSAPP_MODE"] == "bot"
+    run(mode, "off", "--until-reply")
+    assert mode._env_path.read_text() == ENV_BEFORE
+
+
+def test_reply_off_cannot_disable_a_manual_receive_session(mode):
+    mode._env_path.write_text(ENV_BEFORE.replace("WHATSAPP_MODE=self-chat", "WHATSAPP_MODE=bot"))
+    run(mode, "on", "--contact", "4915129583256", "--for", "48h", "--until-reply")
+    values = keys(mode)
+    assert values["WHATSAPP_MODE"] == "bot"
+    assert "4915129583256" in values["WHATSAPP_ALLOWED_USERS"]
+    run(mode, "off", "--until-reply")
+    values = keys(mode)
+    assert values["WHATSAPP_MODE"] == "bot"
+    assert "4915129583256" not in values["WHATSAPP_ALLOWED_USERS"]
+    assert "491500000001" in values["WHATSAPP_ALLOWED_USERS"]
+
+
+def test_until_reply_is_reserved_for_the_fixed_morris_contact(mode):
+    assert run(mode, "on", "--contact", "491701234567", "--for", "48h", "--until-reply") == 2
+    assert keys(mode)["WHATSAPP_MODE"] == "self-chat"
+
+
 def test_a_lost_state_file_falls_back_to_off_not_to_stuck_on(mode):
     run(mode, "on", "--contact", "491701234567")
     Path(mode.STATE_PATH).unlink()

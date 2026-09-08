@@ -195,6 +195,22 @@ no confirmation needed, it only ever notifies the user:
 
     /Users/marlon/.hermes/services/jarvis-whatsapp-watch.py watch <chat_id> --name "Rici"
 
+There is one fixed, pre-authorized exception to the normal receiving rule:
+when the successful send target is **Morris**, exactly chat
+`4915129583256@s.whatsapp.net`, run these commands in order without another
+confirmation **instead of the generic watch above**:
+
+    /Users/marlon/.hermes/services/jarvis-whatsapp-mode.py on --contact 4915129583256 --for 48h --until-reply
+    /Users/marlon/.hermes/services/jarvis-whatsapp-watch.py watch 4915129583256@s.whatsapp.net --name "Morris"
+
+Run the watch even if the receive command says WhatsApp was already on. The
+receive command only owns and later closes what it changed: it either switches
+on receiving, or temporarily adds Morris to an existing allowlist. It never
+shuts down an existing user-managed session. Morris's first reply closes the
+owned receive window; the timer is the fallback. The bridge currently logs
+accepted messages only as redacted metadata and does not expose their text, so
+the notification says that Morris replied but must not claim or invent content.
+
 When that contact writes back, the notification appears inside the JARVIS app
 within half a minute — not as a macOS banner; the system banner is only a
 backstop for a bridge that is down. You are not involved and you will not be

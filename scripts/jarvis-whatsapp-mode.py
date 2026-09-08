@@ -3,6 +3,7 @@
 
     jarvis-whatsapp-mode.py status
     jarvis-whatsapp-mode.py on --contact 4915112345678 --for 2h
+    jarvis-whatsapp-mode.py on --contact 4915129583256 --for 48h --until-reply
     jarvis-whatsapp-mode.py off
 
 Default is off, and off is the safe state. While it is on, Hermes **answers
@@ -41,6 +42,11 @@ STATE_PATH = Path(os.environ.get("JARVIS_WA_MODE_STATE", HOME / ".hermes/jarvis-
 MANAGED = ("WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
            "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_DEBUG")
 MAX_HOURS = 24 * 7
+# This is deliberately a fixed, one-contact exception.  A reply watcher calls
+# `off --until-reply`, which only acts when this invocation owns bot mode.
+MORRIS_CONTACT = "4915129583256"
+UNTIL_REPLY_STATE_KEYS = ("until_reply_contact", "until_reply_existing_mode",
+                          "until_reply_added_contact", "until_reply_until")
 
 
 # ----------------------------------------------------------------- .env access
@@ -178,6 +184,29 @@ def cmd_on(args) -> int:
               "Ohne Kontakte empfängt der Bot-Modus nichts — die Allowlist verwirft alles.",
               file=sys.stderr)
         return 2
+    if args.until_reply and contacts != [MORRIS_CONTACT]:
+        print("--until-reply ist nur für den fest hinterlegten Morris-Chat erlaubt.",
+              file=sys.stderr)
+        return 2
+    if args.until_reply and env.get("WHATSAPP_MODE") == "bot":
+        # Existing receiving is user-owned. Add Morris only when needed, and
+        # later remove only that addition rather than switching bot mode off.
+        existing = [v for v in env.get("WHATSAPP_ALLOWED_USERS", "").split(",") if v.strip()]
+        if MORRIS_CONTACT in existing:
+            print("WhatsApp-Empfang für Morris läuft bereits und bleibt user-verwaltet.")
+            return 0
+        state = load_state()
+        state.update({"until_reply_contact": MORRIS_CONTACT,
+                      "until_reply_existing_mode": True,
+                      "until_reply_added_contact": True,
+                      "until_reply_until": time.time() + args.duration * 3600})
+        save_state(state)
+        write_env({"WHATSAPP_ALLOWED_USERS": ",".join(sorted(set(existing) | {MORRIS_CONTACT}))})
+        ok = restart_gateway()
+        print(describe(read_env(), load_state()))
+        print("Gateway neu gestartet." if ok else
+              "ACHTUNG: Gateway-Neustart fehlgeschlagen — 'hermes gateway restart' von Hand.")
+        return 0 if ok else 1
     if env.get("WHATSAPP_MODE") != "bot":
         # Only the first activation records the truth; a second `on` must not
         # overwrite the saved state with the already-modified values.
@@ -188,6 +217,14 @@ def cmd_on(args) -> int:
     existing = [v for v in env.get("WHATSAPP_ALLOWED_USERS", "").split(",") if v.strip()]
     allowed = sorted(set(existing) | set(contacts))
     state["until"] = time.time() + args.duration * 3600 if args.duration else None
+    if args.until_reply:
+        state["until_reply_contact"] = MORRIS_CONTACT
+        state["until_reply_until"] = state["until"]
+    else:
+        # A manual follow-up activation takes ownership back from the automatic
+        # Morris window, so its watcher cannot unexpectedly turn it off.
+        for key in UNTIL_REPLY_STATE_KEYS:
+            state.pop(key, None)
     save_state(state)
     write_env({
         "WHATSAPP_MODE": "bot",
@@ -204,6 +241,25 @@ def cmd_on(args) -> int:
 
 def cmd_off(_args) -> int:
     state = load_state()
+    if getattr(_args, "until_reply", False) and state.get("until_reply_contact") != MORRIS_CONTACT:
+        # This is intentionally a no-op unless the fixed Morris activation
+        # created the current receive window.
+        return 0
+    if getattr(_args, "until_reply", False) and state.get("until_reply_existing_mode"):
+        # Morris was added to an already-running user session.  Restore only
+        # that allowlist entry and preserve its mode, timer and other contacts.
+        if state.get("until_reply_added_contact"):
+            env = read_env()
+            allowed = [value for value in env.get("WHATSAPP_ALLOWED_USERS", "").split(",")
+                       if value.strip() and value != MORRIS_CONTACT]
+            write_env({"WHATSAPP_ALLOWED_USERS": ",".join(allowed)})
+            ok = restart_gateway()
+        else:
+            ok = True
+        for key in UNTIL_REPLY_STATE_KEYS:
+            state.pop(key, None)
+        save_state(state)
+        return 0 if ok else 1
     previous = state.get("previous") or {}
     if not previous and read_env().get("WHATSAPP_MODE") != "bot":
         print(describe(read_env(), state))
@@ -226,6 +282,15 @@ def cmd_enforce(args) -> int:
     """Called by launchd: switch back when the time is up."""
     state = load_state()
     until = state.get("until")
+    if until and time.time() >= until:
+        print(f"Zeit abgelaufen — WhatsApp-Empfang wird abgeschaltet "
+              f"({time.strftime('%Y-%m-%d %H:%M:%S')})")
+        return cmd_off(args)
+    reply_until = state.get("until_reply_until")
+    if reply_until and time.time() >= reply_until:
+        print(f"Zeit abgelaufen — Morris-Empfang wird abgeschaltet "
+              f"({time.strftime('%Y-%m-%d %H:%M:%S')})")
+        return cmd_off(argparse.Namespace(until_reply=True))
     if not until or time.time() < until:
         if args.verbose:
             print("nichts zu tun")
@@ -246,9 +311,13 @@ def main() -> int:
                     help="Nummer, von der empfangen werden darf (mehrfach möglich)")
     on.add_argument("--for", dest="duration", type=parse_duration, default=None,
                     metavar="DAUER", help="z. B. 90m, 2h, 1d — danach automatisch aus")
+    on.add_argument("--until-reply", action="store_true",
+                    help=argparse.SUPPRESS)
     on.set_defaults(func=cmd_on)
 
-    sub.add_parser("off", help="Empfangen abschalten").set_defaults(func=cmd_off)
+    off = sub.add_parser("off", help="Empfangen abschalten")
+    off.add_argument("--until-reply", action="store_true", help=argparse.SUPPRESS)
+    off.set_defaults(func=cmd_off)
 
     enforce = sub.add_parser("enforce", help="abgelaufene Zeitbegrenzung durchsetzen (launchd)")
     enforce.add_argument("--verbose", action="store_true")

@@ -77,6 +77,40 @@ def test_a_lid_reply_matches_the_phone_number_it_was_sent_to(tmp_path, monkeypat
     assert run(module, "poll", "--quiet") == ["Rici"]
 
 
+def test_morris_accepted_reply_closes_his_owned_receive_window_and_notifies(tmp_path, monkeypatch):
+    """Allowed messages are bridge debug metadata, not readable message text."""
+    module, log, _ = load(tmp_path, monkeypatch)
+    stopped, sent = [], []
+    module.stop_morris_receiving = lambda: stopped.append(True)
+    module.notify = lambda name, speak: sent.append((name, speak))
+    run_status(module, "watch", "4915129583256@s.whatsapp.net", "--name", "not Morris")
+    with log.open("a") as handle:
+        handle.write(json.dumps({"event": "debug", "stage": "queued",
+                                 "chatId": "…3256@s.whatsapp.net",
+                                 "senderId": "…3256@s.whatsapp.net",
+                                 "fromOwner": False, "bodyLength": 23}) + "\n")
+    assert run_status(module, "poll", "--quiet") == 0
+    assert sent == [("Morris", False)]
+    assert stopped == [True]
+    assert json.loads((tmp_path / "state.json").read_text())["watches"] == {}
+
+
+def test_morris_uses_only_the_bridge_metadata_not_reply_text(tmp_path, monkeypatch):
+    module, log, _ = load(tmp_path, monkeypatch)
+    module.stop_morris_receiving = lambda: None
+    observed = []
+    module.notify = lambda name, speak: observed.append((name, speak))
+    run_status(module, "watch", "4915129583256")
+    with log.open("a") as handle:
+        handle.write(json.dumps({"event": "debug", "stage": "queued",
+                                 "chatId": "…3256@s.whatsapp.net",
+                                 "senderId": "…3256@s.whatsapp.net",
+                                 "body": "nicht lesbar weitergeben"}) + "\n")
+    run_status(module, "poll", "--quiet")
+    assert observed == [("Morris", False)]
+    assert "nicht lesbar" not in (tmp_path / "state.json").read_text()
+
+
 def test_somebody_else_writing_does_not_fire_the_watch(tmp_path, monkeypatch):
     module, log, _ = load(tmp_path, monkeypatch)
     run(module, "watch", "4915112345678", "--name", "Rici")

@@ -15,8 +15,9 @@ reader would steal messages out from under the gateway. `bridge.log` is a
 byproduct nobody consumes, so reading it disturbs nothing.
 
 What this deliberately does NOT do: read, store or forward what anyone wrote.
-It reports that a reply arrived and from whom. The content stays in WhatsApp,
-which is the whole point of a nudge rather than a transcript.
+It reports that a reply arrived and from whom. The bridge's accepted-message
+debug records contain only redacted ids and body length, not the body itself,
+and its message queue belongs to Hermes. The content stays in WhatsApp.
 """
 from __future__ import annotations
 
@@ -39,6 +40,8 @@ NOTIFY_URL = os.environ.get("JARVIS_NOTIFY_URL", "http://127.0.0.1:8770/notify")
 # A watch is a standing promise to interrupt the user. It expires so a contact
 # who answers three days later does not produce a notification out of nowhere.
 DEFAULT_TTL_HOURS = 48
+MORRIS_CONTACT = "4915129583256"
+MORRIS_NAME = "Morris"
 # Only lines the bridge writes for an inbound message it did not process.
 INBOUND_REASONS = {"self_chat_mode_rejects_non_self", "allowlist_mismatch",
                    "allowlist_mismatch_owner_chat"}
@@ -152,6 +155,21 @@ def notify(name: str, speak: bool) -> None:
                   {"X-Jarvis-Token": hud_token()})
 
 
+def stop_morris_receiving() -> None:
+    """Close only the receive session explicitly owned by the Morris rule.
+
+    `off --until-reply` is a no-op unless mode.py recorded that it switched on
+    receiving for Morris.  That preserves a pre-existing or later manual bot
+    session.
+    """
+    try:
+        subprocess.run([sys.executable, str(Path(__file__).with_name("jarvis-whatsapp-mode.py")),
+                        "off", "--until-reply"],
+                       check=False, capture_output=True, timeout=130)
+    except (OSError, subprocess.SubprocessError):
+        pass  # The 48-hour mode timer remains the safe backstop.
+
+
 def post_json(url: str, payload: dict, headers: dict) -> bool:
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST",
@@ -187,10 +205,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
     state = load_state()
     # A fresh send restarts the clock rather than adding a second watch.
     state["watches"][key] = {
-        "name": (args.name or "").strip()[:60] or f"+{key}",
+        "name": MORRIS_NAME if key == MORRIS_CONTACT else (args.name or "").strip()[:60] or f"+{key}",
         "since": time.time(),
         "ttl_hours": args.ttl,
         "aliases": sorted(aliases(key)),
+        # The bridge logs accepted bot messages as redacted debug/queued events.
+        # Only the fixed Morris rule may use that weaker identity signal.
+        "morris_receive_rule": key == MORRIS_CONTACT,
     }
     # Start at the end of the log: a backlog of old messages must not fire a
     # burst of notifications the moment a watch is registered.
@@ -243,6 +264,28 @@ def log_stat() -> tuple[int, int]:
         return 0, 0
 
 
+def event_matches_watch(event: dict, key: str, entry: dict) -> bool:
+    """Whether one bridge-log event is the watched contact's reply.
+
+    Rejected messages retain their full ids.  The installed Hermes bridge logs
+    allowed messages as `{event:"debug", stage:"queued"}` with ids redacted to
+    their final four digits.  That is enough for the one fixed Morris rule, but
+    intentionally not for ordinary watches where a suffix collision would be
+    too weak an identity check.
+    """
+    if event.get("event") == "ignored" and event.get("reason") in INBOUND_REASONS:
+        values = {bare(event.get(field, "")) for field in ("senderId", "chatId")}
+        return bool(values & (set(entry.get("aliases") or [key]) | {key}))
+    if not entry.get("morris_receive_rule"):
+        return False
+    if event.get("event") != "debug" or event.get("stage") != "queued" or event.get("fromOwner"):
+        return False
+    suffix = key[-4:]
+    values = [bare(event.get(field, "")) for field in ("senderId", "chatId")]
+    values = [value for value in values if value]
+    return bool(values) and all(value.startswith("…") and value.endswith(suffix) for value in values)
+
+
 def cmd_poll(args: argparse.Namespace) -> int:
     state = load_state()
     watches = state["watches"]
@@ -258,7 +301,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
     if size < offset or inode != state.get("inode", inode):
         offset = 0          # the bridge restarted, truncating or rotating its log
     state["inode"] = inode
-    senders: set[str] = set()
+    replies: set[str] = set()
     if watches and size > offset:
         try:
             with BRIDGE_LOG.open("rb") as handle:
@@ -275,25 +318,23 @@ def cmd_poll(args: argparse.Namespace) -> int:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if event.get("event") != "ignored" or event.get("reason") not in INBOUND_REASONS:
-                continue
-            for field in ("senderId", "chatId"):
-                value = bare(event.get(field, ""))
-                if value:
-                    senders.add(value)
+            for key, entry in watches.items():
+                if event_matches_watch(event, key, entry):
+                    replies.add(key)
     # With no watch open there is nothing to find, so skip to the end rather
     # than keeping a stale offset that would replay a day of log on the next one.
     state["offset"] = size if not watches else offset
 
     fired = []
     for key, entry in list(watches.items()):
-        known = set(entry.get("aliases") or [key]) | {key}
-        if known & senders:
-            fired.append(entry.get("name", key))
+        if key in replies:
+            fired.append((entry.get("name", key), entry.get("morris_receive_rule", False)))
             watches.pop(key, None)
     save_state(state)
 
-    for name in fired:
+    for name, stop_receiving in fired:
+        if stop_receiving:
+            stop_morris_receiving()
         notify(name, speak=not args.quiet)
         print(f"Antwort von {name}")
     if args.verbose and not fired:
