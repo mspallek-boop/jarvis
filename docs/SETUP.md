@@ -193,6 +193,26 @@ break plugin discovery. The agent then has `hud_display` / `hud_dismiss`
 tools; YouTube links play as embedded video, `position` left/right lets it
 fly in multiple panels from different vectors.
 
+### Read-only Gmail summaries
+
+JARVIS can list recent Gmail message summaries and search the configured
+mailbox through the local Himalaya CLI. It uses the account named `gmail` in
+`~/Library/Application Support/himalaya/config.toml`; credentials stay in the
+macOS Keychain and are never copied into this repository, a plugin, or Hermes
+configuration.
+
+```bash
+cp -R hermes-plugin/jarvis_gmail ~/.hermes/plugins/jarvis_gmail
+hermes plugins enable jarvis_gmail
+# restart the Hermes gateway after enabling the plugin
+```
+
+The `gmail_list_emails` tool is intentionally read-only: it returns bounded
+sender, subject, date, unread, and attachment metadata from a mailbox or a
+Himalaya query. It does not read message bodies, change mailbox state, create
+drafts, or send email. Sending is withheld until JARVIS has an
+email-specific user-confirmation contract.
+
 ## 6. Verify everything
 
 ```bash

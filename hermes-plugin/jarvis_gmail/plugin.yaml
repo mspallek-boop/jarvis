@@ -1,0 +1,5 @@
+name: jarvis_gmail
+version: 1.0.0
+description: List and search Gmail message summaries through the local Himalaya CLI
+provides_tools:
+  - gmail_list_emails
