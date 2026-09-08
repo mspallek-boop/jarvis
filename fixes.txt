@@ -12,3 +12,4 @@ vom 2026-09-07.
 [x] Pille: Glyphe zappelt im Schlaf  -> animiert nur noch beim Zuhoeren/Denken
 [x] Pille: Dock oeffnet 2. Fenster   -> AppDelegate holt das gefaltete zurueck
 [x] Minimieren wuergt Stimme ab      -> setVoiceForeground ignoriert Verstecken bei Pille
+[x] WhatsApp lesen / zusammenfassen -> jarvis-whatsapp-read.py aus ChatStorage.sqlite

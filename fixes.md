@@ -240,6 +240,57 @@ Zustand danach noch einmal ausdrücklich — sonst entscheidet ein Rennen darüb
 ob dein Satz zu Ende gesprochen wird. Laufende Aufgaben waren nie betroffen;
 `chatTasks` wird nur beim Abschluss abgebrochen.
 
+### 12. WhatsApp lesen — ungelesene Nachrichten zusammenfassen
+**Erledigt, 2026-09-08.**
+
+Die alte Notiz sagte, JARVIS dürfe nur wissen *dass* jemand geantwortet hat,
+nicht *was*. Das stimmte für den Weg, den ich damals genommen hatte, und
+dieser Weg war die Sackgasse.
+
+**Warum die Bridge es nie konnte.** Sie läuft auf Baileys mit
+`syncFullHistory: false`, und im Code steht wörtlich "We don't maintain a
+message store". Ihre Warteschlange wird von `GET /messages` *geleert* — wer
+liest, nimmt sie dem Gateway weg. Im `self-chat`-Modus verwirft sie fremde
+Nachrichten, bevor irgendetwas sie sieht. "Was ist ungelesen" hat dort keine
+Datenquelle, aus der es beantwortet werden könnte. Sie zu erweitern hätte
+außerdem fremden Code in `~/.hermes/hermes-agent/` geändert, den das nächste
+Hermes-Update überschreibt.
+
+**Was stattdessen da war.** WhatsApp Desktop legt jeden Chat in einer
+**unverschlüsselten SQLite-Datei** im eigenen Gruppen-Container ab
+(`ChatStorage.sqlite`, 34 MB, live aktualisiert). Kein Protokoll, kein
+zweites gekoppeltes Gerät, kein QR-Code. Neu ist
+`scripts/jarvis-whatsapp-read.py`:
+
+    jarvis-whatsapp-read.py unread          # wer wartet, wie viele, seit wann
+    jarvis-whatsapp-read.py unread --full   # und was sie geschrieben haben
+    jarvis-whatsapp-read.py chat Andi       # ein Gespräch der Reihe nach
+
+Vier Dinge, die den Unterschied zwischen "läuft" und "stimmt" machen:
+
+- **`mode=ro`, nicht `immutable=1`.** Der naheliegende `immutable`-Schalter
+  ignoriert die `-wal`-Datei, und dort stehen die neuesten Stunden. Auf diesem
+  Mac gemessen: die immutable-Sicht war zweieinhalb Stunden hinterher.
+- **Gruppen-Absender.** `ZWAMESSAGE.ZPUSHNAME` sieht nach dem Namen aus und ist
+  eine Falle — in Gruppen steht dort ein base64-Block. Die Namen liegen in
+  `ZWAPROFILEPUSHNAME`, adressiert über die `@lid`-Kennung des Mitglieds statt
+  über eine Telefonnummer. Ohne diesen Join hieß jeder Absender "jemand".
+- **Nichts wird geschrieben.** Die Verbindung ist schreibgeschützt geöffnet und
+  im Code steht kein INSERT, UPDATE oder DELETE. Deine Chats bleiben in
+  WhatsApp ungelesen — sonst hätte "fass mir den Morgen zusammen" nebenbei alle
+  Badges gelöscht. Ein Test prüft das byte-genau.
+- **Deckelung je Chat.** Andi hat 172 ungelesene. Ungedeckelt ist das keine
+  Zusammenfassung, sondern eine Wand.
+
+Am laufenden Dienst nachgewiesen: auf "Fasse meine ungelesenen WhatsApp-
+Nachrichten zusammen, wer braucht eine Antwort?" findet JARVIS das Skript
+selbst über die SOUL und antwortet mit drei konkreten Chats, die eine Antwort
+brauchen. 7 neue Tests.
+
+Die SOUL sagt dazu: lesen ist frei, **weitergeben nicht**. Etwas aus einem Chat
+in einen anderen Chat, eine Mail oder eine Datei zu zitieren ist eine eigene
+Handlung und braucht die übliche Rückfrage.
+
 ### 7. WhatsApp-Anrufe
 Nicht baubar. Die Bridge nutzt Baileys, und Baileys kann Anrufe nur
 **ablehnen** (`rejectCall`) — ausgehende Anrufe implementiert es nicht, und die

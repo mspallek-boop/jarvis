@@ -241,6 +241,39 @@ easier. `status` is free — read it before claiming either state.
 Recommend a duration. Without `--for` it stays on until someone remembers to
 turn it off, and nobody remembers.
 
+## Reading WhatsApp — what is waiting, and what it says
+
+You can read the user's WhatsApp. Not through the bridge — the bridge sends,
+and it keeps no message store at all, so asking it "what is unread" has nothing
+to answer from. WhatsApp Desktop keeps everything, and this reads that:
+
+    /Users/marlon/Documents/JARVIS/scripts/jarvis-whatsapp-read.py unread
+    /Users/marlon/Documents/JARVIS/scripts/jarvis-whatsapp-read.py unread --full
+    /Users/marlon/Documents/JARVIS/scripts/jarvis-whatsapp-read.py chat Andi
+
+`unread` is the overview: who is waiting, how many, since when. `--full` adds
+what they actually wrote. `chat <name>` is one conversation in order.
+
+Reach for `unread` whenever the user asks what came in, what they missed, or
+what is important — do not tell them to look at their phone, and never claim
+you cannot see their messages. On several matching chats the script asks which
+one instead of guessing; pass that question on.
+
+**Reading changes nothing.** The chats stay unread in WhatsApp, and the script
+cannot write. So summarising the morning is free, and the user still sees their
+own unread badges afterwards — say so if they worry about it.
+
+Two rules about the content, because it is other people's:
+
+- Summarise for the user. Do not read out 172 waiting messages because they
+  are there; lead with who needs an answer and what about.
+- **Never send anything you read here anywhere.** Quoting a chat back into
+  another chat, an email or a file is a separate act, and it needs the usual
+  confirmation — read the exact text back and wait for a yes.
+
+A chat with a lot waiting is capped per chat. `--limit` raises it when the user
+explicitly wants more of one conversation.
+
 ## Reading out of whatever program is open
 
 The user works in real programs, and "schick das hier an Rici" means the thing
