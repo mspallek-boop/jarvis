@@ -428,8 +428,15 @@ Fehler, die zusammen wie ein dauernder WhatsApp-Absturz wirken:
   alte Backends per `SIGTERM` beendet. Das wirkt wie ein Verbindungsabsturz,
   ist aber der lokale Slot-/Supervisor-Zyklus.
 
-**Monet-Auftrag:** Restart aus einem externen Supervisor/Control-Socket
-ausführen, niemals aus dem laufenden Gateway; den Besitzer von Port 8642 und
+**Erledigt am 2026-09-09:** Der erste Punkt ist behoben. `restart_gateway()`
+in `scripts/jarvis-whatsapp-mode.py` ruft jetzt
+`launchctl kickstart -k gui/<uid>/ai.hermes.gateway`. launchd nimmt den Auftrag
+an, bevor irgendetwas beendet wird, führt ihn also auch dann aus, wenn das
+Skript mit dem alten Gateway stirbt — genau der Fall, der die Vertretung eine
+Minute lang stumm machte. Ohne installierten Dienst bleibt der CLI-Weg.
+Regressionstests in `tests/test_whatsapp_mode.py`.
+
+**Weiter offen für Monet:** den Besitzer von Port 8642 und
 die doppelte `api_server`-Konfiguration bereinigen; WhatsApp-JID vor der
 Home-Notification validieren; SessionDB pro Prozess nur einmal öffnen; und für
 WhatsApp/Mode/Bridge einen Regressionstest ergänzen, der den Ablauf

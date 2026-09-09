@@ -14,5 +14,7 @@ vom 2026-09-07.
 [x] Minimieren wuergt Stimme ab      -> setVoiceForeground ignoriert Verstecken bei Pille
 [x] WhatsApp lesen / zusammenfassen -> jarvis-whatsapp-read.py aus ChatStorage.sqlite
 [x] Hotkey weckt aus dem Nichts   -> App ueberlebt letztes Fenster, Pille springt aus dem Dock
-[ ] Hermes/WhatsApp Gateway-Abstuerze -> Restart aus laufendem Gateway blockiert; Port 8642 belegt; whatsapp-bot doppelt mit api_server; ungueltige JID-Notification; SessionDB-/Slot-/BrokenPipe-Folgen analysieren und Regressionstest fuer Mode-off -> Restart -> Reconnect bauen
+[~] Hermes/WhatsApp Gateway-Abstuerze -> Restart laeuft jetzt ueber launchctl kickstart (erledigt); Port 8642 belegt; whatsapp-bot doppelt mit api_server; ungueltige JID-Notification; SessionDB-/Slot-/BrokenPipe-Folgen analysieren und Regressionstest fuer Mode-off -> Restart -> Reconnect bauen
 [ ] OpenAI-Stimmen aktualisieren -> echte Butler-/JARVIS-Stimme testen; ruhiger und souveräner Klang, schnelles verständliches Sprechen, kurze Sätze und keine langen Pausen zwischen Sätzen/Audio-Chunks
+[x] iPhone: Bildschirm aus -> "Verbindung verloren" -> Suspend zaehlt nicht mehr als Ausfall, Live Activity auf Sperrbildschirm und Dynamic Island
+[x] Weckwort blockiert den Ton -> Schalter in den Einstellungen, der das Mikrofon wirklich freigibt
