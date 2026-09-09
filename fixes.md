@@ -403,3 +403,48 @@ Das hat schon Schaden angerichtet: die WhatsApp-Bridge ist mit
 `ENOSPC: no space left on device` beim Schreiben von `creds.json` abgestürzt.
 Eine kaputte `creds.json` kostet die WhatsApp-Kopplung. Das ist unabhängig von
 allem oben und sollte zuerst passieren.
+
+### 12. Hermes/WhatsApp — Gateway-Abstürze und Data-/Program-Lock
+**Offen für Monet. Befund vom 2026-09-09.** Die Logs zeigen mehrere getrennte
+Fehler, die zusammen wie ein dauernder WhatsApp-Absturz wirken:
+
+- Der Gateway-Prozess wird per `SIGTERM` beendet und startet danach neu. Im
+  `gateway-exit-diag.log` endet der Shutdown wiederholt mit Exit-Code 75;
+  am 2026-09-09 um 16:38:51 steht zusätzlich `signal-initiated shutdown`.
+- `jarvis-whatsapp-mode.py` wollte nach Ablauf den Gateway selbst neu starten,
+  aber `hermes gateway restart` scheitert aus dem laufenden Gateway heraus.
+  Das steht zweimal im Mode-Log als "Gateway-Neustart fehlgeschlagen". Das ist
+  ein Programm-Lock/Sicherheitsblock, kein WhatsApp-Protokollfehler.
+- Beim Neustart kollidiert `api_server` auf `127.0.0.1:8642` mit einem bereits
+  laufenden Listener (`Errno 48 address already in use`). Zusätzlich ist im
+  Profil `whatsapp-bot` ein eigener `api_server` konfiguriert, obwohl
+  `multiplex_profiles` aktiv ist; Hermes überspringt das Profil deshalb.
+- Der Startversuch erzeugt außerdem eine ungültige WhatsApp-Home-Notification:
+  `Cannot destructure property 'user' of 'jidDecode(...)' as it is undefined.`
+- Die vielen `BrokenPipeError` im Bridge-Log sind überwiegend abgebrochene
+  HTTP-Clients beim Schreiben der Antwort; sie erklären die roten Tracebacks,
+  sind aber nicht der primäre Gateway-Tod.
+- Beim Desktop-Restart werden Backend-Profile wegen `3/3 busy` verzögert und
+  alte Backends per `SIGTERM` beendet. Das wirkt wie ein Verbindungsabsturz,
+  ist aber der lokale Slot-/Supervisor-Zyklus.
+
+**Monet-Auftrag:** Restart aus einem externen Supervisor/Control-Socket
+ausführen, niemals aus dem laufenden Gateway; den Besitzer von Port 8642 und
+die doppelte `api_server`-Konfiguration bereinigen; WhatsApp-JID vor der
+Home-Notification validieren; SessionDB pro Prozess nur einmal öffnen; und für
+WhatsApp/Mode/Bridge einen Regressionstest ergänzen, der den Ablauf
+`Zeitablauf → Mode off → Gateway-Neustart → Bridge reconnect` ohne Lock und
+ohne Portkollision durchspielt. `BrokenPipeError` beim Client-Abbruch gezielt
+abfangen und nicht als Gateway-Crash loggen.
+
+### 13. OpenAI-Stimmen — Butler-/JARVIS-Stimme und Sprechtempo
+**Offen für Monet.** Die verfügbaren OpenAI-Stimmen sollen aktualisiert und
+praktisch gegeneinander getestet werden. Gesucht ist keine bloß angenehme
+Stimme, sondern eine markante, ruhige Butler-/JARVIS-Anmutung: klar, souverän,
+leicht trocken und auch bei höherem Tempo verständlich.
+
+Wichtig sind kurze, natürlich formulierte Sätze, schnelle Satzfolgen und keine
+unnötig langen Pausen zwischen den Sätzen oder Audio-Chunks. Monet soll die
+Voice-Auswahl, das Tempo, Chunking und die Satzsegmentierung gemeinsam testen;
+die beste Kombination live im JARVIS-Weg aktivieren und mit einem kurzen
+deutschen Butler-Testtext sowie einem schnellen Mehrsatz-Test verifizieren.
