@@ -131,7 +131,7 @@ class BridgeConfig:
     piper_bin: str = ""
     piper_model: str = ""
     openai_key: str = field(default="", repr=False)
-    openai_voice: str = "ash"
+    openai_voice: str = "ash"          # the butler default; see OPENAI_VOICES
     openai_model: str = "gpt-4o-mini-tts"
     openai_instructions: str = ""
     elevenlabs_key: str = field(default="", repr=False)
@@ -557,12 +557,23 @@ OPENAI_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
 # Steerable by instruction, which is the reason this provider exists: the
 # complaint was never intelligibility, it was that no local voice sounds like a
 # butler. Here the persona is a parameter.
-OPENAI_VOICES = ("ash", "onyx", "ballad", "sage", "verse", "alloy", "echo",
-                 "fable", "nova", "shimmer", "coral")
+# Checked against the API on 2026-09-09: all thirteen accept a request.
+# `marin` and `cedar` are the newer pair and were missing here entirely.
+# The butler candidates are first, because the picker shows them in order.
+OPENAI_VOICES = ("ash", "onyx", "ballad", "cedar", "marin", "sage", "verse",
+                 "alloy", "echo", "fable", "nova", "shimmer", "coral")
+# Tempo belongs in the instruction, not in a playback rate: asking for a faster
+# rate afterwards raises the pitch and undoes the calm this is meant to have.
+# The sentence about pauses is not decoration — a model that is not told this
+# leaves a beat after every clause, and a butler does not.
 DEFAULT_OPENAI_INSTRUCTIONS = (
-    "Sprich wie ein britischer Butler: ruhig, trocken, unaufgeregt, mit leiser "
-    "Ironie. Tiefe, warme Stimme, gemessenes Tempo, kein Enthusiasmus, keine "
-    "hochgezogene Betonung am Satzende. Deutsch, ohne Akzent."
+    "Du bist ein britischer Butler. Ruhig, trocken, souverän, mit leiser "
+    "Ironie und ohne jeden Enthusiasmus. Tiefe, warme Stimme, klare "
+    "Artikulation, keine hochgezogene Betonung am Satzende. "
+    "Sprich zügig und flüssig, so schnell wie ein Mensch, der weiß, was er "
+    "sagt, aber nie gehetzt und immer verständlich. Kurze Pausen zwischen den "
+    "Sätzen, keine gedehnten Wörter, kein Zögern, keine Atempausen mitten im "
+    "Satz. Deutsch, akzentfrei."
 )
 
 

@@ -95,6 +95,11 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     /// coming out of the speaker, so what the microphone hears is the user.
     private var hasPlayedInStream = false
     private var streamClient: JarvisAPIClient?
+    /// True while the natural voice is taking sentences into its own queue.
+    private var neuralStreamOpen = false
+    /// What was handed to that queue, kept only so a failure before the first
+    /// sound can still be spoken by the system voice.
+    private var pendingNeuralText = ""
     @Published var playbackSpeed = SpeechPlaybackSpeed.load() {
         didSet {
             playbackSpeed.save()
@@ -421,6 +426,8 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     func stopSpeaking() {
         queuedSentences = []
         streamIsOpen = false
+        neuralStreamOpen = false
+        pendingNeuralText = ""
         hasPlayedInStream = false
         // Nothing is coming out of the speaker any more, so the user's words
         // must stop being mistaken for our own echo.
@@ -454,17 +461,69 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         streamIsOpen = true
         hasPlayedInStream = false
         streamClient = client
+        neuralStreamOpen = false
     }
 
     func enqueueSentence(_ text: String) {
         guard streamIsOpen, !text.isEmpty else { return }
+        // The natural voice takes sentences into a queue that fetches ahead of
+        // playback. Handing them over one at a time and waiting for each to
+        // finish is what put a full download — six tenths of a second to well
+        // over one — into every sentence boundary.
+        if usesNaturalVoice, let client = streamClient {
+            if !neuralStreamOpen { openNeuralStream(client: client) }
+            if listensWhileSpeaking { bargeIn.nowSpeaking(text) }
+            errorMessage = nil
+            hasPlayedInStream = true
+            isSpeaking = true
+            pendingNeuralText += pendingNeuralText.isEmpty ? text : " " + text
+            neuralPlayer.enqueue(text)
+            ensureBargeInCapture()
+            return
+        }
         queuedSentences.append(text)
         if !isSpeaking { playNextSentence() }
     }
 
     func endStream() {
         streamIsOpen = false
+        if neuralStreamOpen {
+            neuralPlayer.endQueue()
+            return
+        }
         if !isSpeaking { playNextSentence() }
+    }
+
+    /// Opens the gapless queue for one answer.
+    private func openNeuralStream(client: JarvisAPIClient) {
+        neuralStreamOpen = true
+        let id = UUID()
+        speechGeneration = id
+        neuralPlayer.managesAudioSession = !listensWhileSpeaking
+        if !listensWhileSpeaking { finishAudio() }
+        neuralPlayer.beginQueue(client: client) { [weak self] in
+            guard let self, self.speechGeneration == id else { return }
+            self.neuralStreamOpen = false
+            self.outputFinished()
+        } failed: { [weak self] _, started in
+            guard let self, self.speechGeneration == id else { return }
+            self.neuralStreamOpen = false
+            self.neuralPlayer.stop()
+            if started {
+                // Part of the answer was heard. Saying the rest with the system
+                // voice would repeat what it already said in a different voice.
+                self.isSpeaking = false
+                self.errorMessage = "Sprachausgabe unterbrochen. Die Antwort steht im Verlauf."
+                self.outputFinished()
+            } else {
+                // Nothing came out at all, so the system voice is a real
+                // fallback rather than a duplicate.
+                self.isSpeaking = false
+                let pending = self.pendingNeuralText
+                self.pendingNeuralText = ""
+                if pending.isEmpty { self.outputFinished() } else { self.speakSystem(pending) }
+            }
+        }
     }
 
     private func playNextSentence() {
