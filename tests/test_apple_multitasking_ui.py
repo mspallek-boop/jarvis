@@ -27,7 +27,20 @@ def test_multitasking_summary_uses_the_immediate_local_run_state():
 
 
 def test_task_blob_row_excludes_the_center_orb_and_cannot_overflow():
-    blobs = section_after("private var taskBlobs", "private var standingTasks")
-    assert "model.localRuns.filter { $0.id != model.focusedRunID }" in blobs
-    assert "ScrollView(.horizontal, showsIndicators: false)" in blobs
-    assert ".layoutPriority(1)" in blobs
+    row = section_after("private var blobRow", "private var taskBlobs")
+    assert "model.localRuns.filter { $0.id != model.focusedRunID }" in row
+    blobs = section_after("private var taskBlobs", "/// What is still running")
+    # Centred when it fits, scrolling when it does not.
+    assert "ViewThatFits(in: .horizontal)" in blobs
+    assert "ScrollView(.horizontal, showsIndicators: false) { blobRow }" in blobs
+
+
+def test_the_blob_row_never_uses_a_geometry_reader():
+    """GeometryReader is greedy: it claims the space around it and anchors its
+    content top-leading, which threw the row into the window's corner on the
+    Mac. A horizontal ScrollView also cannot centre with `maxWidth: .infinity`,
+    because inside one that resolves to the row's own width."""
+    blobs = section_after("private var blobRow", "/// What is still running")
+    code = "\n".join(line for line in blobs.splitlines() if "//" not in line)
+    assert "GeometryReader" not in code
+    assert "maxWidth: .infinity, alignment: .center" not in code

@@ -251,33 +251,47 @@ struct ContentView: View {
     /// the row horizontally scrollable for that case: an `HStack` with an
     /// unbounded number of fixed-size buttons eventually overflows its parent
     /// and SwiftUI may drop the entire row during its animated relayout.
-    private var taskBlobs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
-                ForEach(model.localRuns.filter { $0.id != model.focusedRunID }) { run in
-                    Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
-                        TaskBlobView(size: 30, color: ink, seed: run.id.hashValue)
-                            .opacity(0.55)
-                            // Small on purpose, but never small to hit.
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    #if os(macOS)
-                    .focusable(false)
-                    #endif
-                    .accessibilityLabel("Aufgabe anzeigen: \(run.prompt.prefix(60))")
-                    .help(String(run.prompt.prefix(80)))
-                    .transition(.scale.combined(with: .opacity))
+    /// One blob per other running task. The focused one is the large orb, so
+    /// it is deliberately not repeated here.
+    private var blobRow: some View {
+        HStack(spacing: 14) {
+            ForEach(model.localRuns.filter { $0.id != model.focusedRunID }) { run in
+                Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
+                    // Brighter and a little larger than it was: at 30 points and
+                    // half opacity a single Bauhaus tile read as a plain grey
+                    // square rather than as one of JARVIS's own glyphs.
+                    TaskBlobView(size: 34, color: ink, seed: run.id.hashValue)
+                        .opacity(0.75)
+                        // Small on purpose, but never small to hit.
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .focusable(false)
+                #endif
+                .accessibilityLabel("Aufgabe anzeigen: \(run.prompt.prefix(60))")
+                .help(String(run.prompt.prefix(80)))
+                .transition(.scale.combined(with: .opacity))
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, 12)
         }
+        .padding(.horizontal, 12)
+    }
+
+    private var taskBlobs: some View {
+        // Centred when the row fits, scrolling when it does not — and neither
+        // job may be given to a GeometryReader. That reader is greedy: it
+        // claims the space around it and anchors its content top-leading, so
+        // the row jumped out of the column and sat in the window's corner.
+        // `ViewThatFits` asks the same question without taking any space.
+        ViewThatFits(in: .horizontal) {
+            blobRow
+            ScrollView(.horizontal, showsIndicators: false) { blobRow }
+        }
+        .frame(maxWidth: .infinity)
         .frame(height: model.localRuns.count > 1 ? 44 : 0)
         .opacity(model.localRuns.count > 1 ? 1 : 0)
         .allowsHitTesting(model.localRuns.count > 1)
-        .layoutPriority(1)
         .animation(.easeInOut(duration: 0.25), value: model.localRuns.count)
     }
 
