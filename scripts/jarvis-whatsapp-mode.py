@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -116,9 +117,22 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_PATH)
 
 
+def hermes_binary() -> str:
+    """Find `hermes` even when nobody set up a PATH.
+
+    launchd hands a job the bare system PATH, and `hermes` lives in
+    ~/.local/bin. A scheduled expiry therefore wrote the env correctly and then
+    failed to restart the gateway — reporting failure for a change that had
+    actually been made, which is the worst of both.
+    """
+    return (shutil.which("hermes")
+            or (str(Path.home() / ".local/bin/hermes")
+                if (Path.home() / ".local/bin/hermes").exists() else "hermes"))
+
+
 def restart_gateway() -> bool:
     try:
-        done = subprocess.run(["hermes", "gateway", "restart"],
+        done = subprocess.run([hermes_binary(), "gateway", "restart"],
                               capture_output=True, timeout=120)
         return done.returncode == 0
     except (OSError, subprocess.SubprocessError):
@@ -215,7 +229,12 @@ def cmd_on(args) -> int:
     state = load_state()
 
     existing = [v for v in env.get("WHATSAPP_ALLOWED_USERS", "").split(",") if v.strip()]
-    allowed = sorted(set(existing) | set(contacts))
+    # The union is right for a person switching receiving on by hand: it must
+    # not silently drop someone another session is relying on. It is wrong for
+    # a caller that owns the whole list — a contact whose reason to be there
+    # has ended would otherwise stay, and keep being answered by nobody's
+    # decision. `--exclusive` is for that caller.
+    allowed = sorted(set(contacts) if args.exclusive else set(existing) | set(contacts))
     state["until"] = time.time() + args.duration * 3600 if args.duration else None
     if args.until_reply:
         state["until_reply_contact"] = MORRIS_CONTACT
@@ -311,6 +330,8 @@ def main() -> int:
                     help="Nummer, von der empfangen werden darf (mehrfach möglich)")
     on.add_argument("--for", dest="duration", type=parse_duration, default=None,
                     metavar="DAUER", help="z. B. 90m, 2h, 1d — danach automatisch aus")
+    on.add_argument("--exclusive", action="store_true",
+                    help="die Liste auf genau diese Nummern setzen statt zu ergänzen")
     on.add_argument("--until-reply", action="store_true",
                     help=argparse.SUPPRESS)
     on.set_defaults(func=cmd_on)

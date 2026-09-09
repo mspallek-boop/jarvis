@@ -4,6 +4,11 @@
 <dict>
     <key>Label</key>
     <string>com.jarvis.whatsapp-mode</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/marlon/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
     <!-- Enforces the timer on `jarvis-whatsapp-mode.py on --for 2h`. Without a
          job like this, "an bis 18 Uhr" quietly means "an forever" the first
          time someone closes the laptop. Runs from ~/.hermes/services because a

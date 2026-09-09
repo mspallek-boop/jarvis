@@ -1,5 +1,6 @@
 import io
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -222,3 +223,72 @@ def test_the_notification_file_stays_private(tmp_path):
 
 def test_a_bad_since_value_is_refused():
     assert notify_request('GET', '/notifications?since=abc')[0] == 400
+
+
+# --------------------------------------------------------------- stand-ins
+
+def write_standins(monkeypatch, tmp_path, standins):
+    path = tmp_path / 'standin.json'
+    path.write_text(json.dumps({'standins': standins}))
+    monkeypatch.setattr(bridge, 'STANDIN_STATE', path)
+    return path
+
+
+def test_standins_need_the_app_token(monkeypatch, tmp_path):
+    write_standins(monkeypatch, tmp_path, {})
+    assert notify_request('GET', '/standins', token='wrong')[0] == 401
+
+
+def test_a_running_standin_is_listed_with_its_end(monkeypatch, tmp_path):
+    ends = time.time() + 3600
+    write_standins(monkeypatch, tmp_path,
+                   {'4917648090349': {'name': 'Marie', 'until': ends, 'announced': True}})
+    status, body = notify_request('GET', '/standins')
+    assert status == 200 and body['count'] == 1
+    assert body['standins'][0]['name'] == 'Marie'
+    assert body['standins'][0]['until'] == pytest.approx(ends)
+    assert body['standins'][0]['announced'] is True
+
+
+def test_the_contact_number_never_leaves_the_bridge(monkeypatch, tmp_path):
+    """The app shows a name and a time; a number on the wire is personal data."""
+    write_standins(monkeypatch, tmp_path,
+                   {'4917648090349': {'name': 'Marie', 'until': time.time() + 60}})
+    assert b'4917648090349' not in json.dumps(notify_request('GET', '/standins')[1]).encode()
+
+
+def test_an_expired_standin_is_not_shown(monkeypatch, tmp_path):
+    """A countdown that has already run out must not linger."""
+    write_standins(monkeypatch, tmp_path,
+                   {'4917648090349': {'name': 'Marie', 'until': time.time() - 1}})
+    assert notify_request('GET', '/standins')[1] == {'standins': [], 'count': 0}
+
+
+@pytest.mark.parametrize('content', ['', 'kaputt{', '[]', '{"standins": "nein"}'])
+def test_an_unreadable_state_file_means_nothing_is_running(monkeypatch, tmp_path, content):
+    """The file belongs to another service: half-written is not a 500."""
+    path = tmp_path / 'standin.json'
+    path.write_text(content)
+    monkeypatch.setattr(bridge, 'STANDIN_STATE', path)
+    assert notify_request('GET', '/standins') == (200, {'standins': [], 'count': 0})
+
+
+def test_a_missing_state_file_means_nothing_is_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, 'STANDIN_STATE', tmp_path / 'weg.json')
+    assert notify_request('GET', '/standins') == (200, {'standins': [], 'count': 0})
+
+
+def test_a_standin_carries_what_has_happened_so_far(monkeypatch, tmp_path):
+    """Opening a running stand-in has to show the run, not only the last nudge."""
+    write_standins(monkeypatch, tmp_path, {'4917648090349': {
+        'name': 'Marie', 'until': time.time() + 60, 'started': 100.0, 'exchanges': 3,
+        'history': [{'at': 101.0, 'gist': 'fragt nach Samstag', 'urgent': False}]}})
+    body = notify_request('GET', '/standins')[1]['standins'][0]
+    assert body['exchanges'] == 3 and body['started'] == 100.0
+    assert body['history'] == [{'at': 101.0, 'gist': 'fragt nach Samstag', 'urgent': False}]
+
+
+def test_a_broken_history_does_not_break_the_listing(monkeypatch, tmp_path):
+    write_standins(monkeypatch, tmp_path, {'4917648090349': {
+        'name': 'Marie', 'until': time.time() + 60, 'history': 'nein', 'exchanges': 'viele'}})
+    assert notify_request('GET', '/standins')[0] == 200

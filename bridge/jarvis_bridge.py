@@ -13,6 +13,7 @@ import base64
 import functools
 import hmac
 import itertools
+import hashlib
 import json
 import re
 import os
@@ -921,10 +922,77 @@ def _pcm_frames(upstream):
 MAX_PARALLEL_CONVERSATIONS = 4
 
 NOTIFY_STATE = Path.home() / ".hermes" / "jarvis-notifications.json"
+# Written by jarvis-chat-standin.py, read here only. A stand-in outlives the
+# app, so the app cannot be the one that remembers it.
+STANDIN_STATE = Path.home() / ".hermes" / "jarvis-chat-standin.json"
 # A nudge is worth showing for a while and then not at all. Fifty is far more
 # than a clean interface should ever display; it is a ceiling, not a target.
 MAX_NOTIFICATIONS = 50
 NOTIFY_KINDS = {"whatsapp_reply", "task", "info"}
+
+
+def _number(value) -> float:
+    """Anything the state file offers, as a number or zero.
+
+    The file belongs to another service and is written while this one reads it,
+    so a half-written or wrong-typed field must degrade to a missing value, not
+    to a 500 on a listing the whole start page depends on.
+    """
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def active_standins() -> list:
+    """The stand-ins running right now, for a client that wants to show them.
+
+    Read-only and defensive: the file belongs to another service, so anything
+    unreadable or half-written is answered with "nothing running" rather than a
+    500. Expired entries are filtered here too — the service clears them on its
+    own tick, and a countdown that has already run out must not linger.
+
+    The contact's number never leaves this function. The app shows a name and a
+    time; it has no use for the number, and a phone number on the wire is
+    personal data that would then also sit in the app's memory.
+    """
+    try:
+        entries = json.loads(STANDIN_STATE.read_text()).get("standins") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(entries, dict):
+        return []
+    now = time.time()
+    items = []
+    for key, standin in entries.items():
+        if not isinstance(standin, dict):
+            continue
+        try:
+            until = float(standin.get("until") or 0)
+        except (TypeError, ValueError):
+            continue
+        if until <= now:
+            continue
+        history = standin.get("history")
+        history = history if isinstance(history, list) else []
+        items.append({
+            "id": hashlib.sha256(str(key).encode()).hexdigest()[:12],
+            "kind": "standin",
+            "name": str(standin.get("name") or "").strip() or "Chat",
+            "until": until,
+            "started": _number(standin.get("started")),
+            "announced": bool(standin.get("announced")),
+            "exchanges": int(_number(standin.get("exchanges"))),
+            # What JARVIS reported about the conversation, in order. Not the
+            # messages themselves — this is the account it already gave the
+            # user, kept so opening the task shows the run rather than only
+            # the last nudge.
+            "history": [{"at": _number(item.get("at")),
+                         "gist": str(item.get("gist") or ""),
+                         "urgent": bool(item.get("urgent"))}
+                        for item in history if isinstance(item, dict)],
+        })
+    return sorted(items, key=lambda item: item["until"])
 
 
 class Notifications:
@@ -1694,6 +1762,10 @@ class JarvisHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"notifications": items,
                                        "unread": NOTIFICATIONS.unread(),
                                        "latest": items[-1]["id"] if items else after})
+            return
+        if parsed.path == "/standins":
+            items = active_standins()
+            self._json(HTTPStatus.OK, {"standins": items, "count": len(items)})
             return
         if parsed.path == "/runs":
             # The whole board, for a client that shows several running tasks at

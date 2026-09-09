@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.jarvis.chat-standin</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/marlon/.local/bin/python3.11</string>
+		<string>/Users/marlon/.hermes/services/jarvis-chat-standin.py</string>
+		<string>poll</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/marlon/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>/Users/marlon/.hermes/logs/jarvis-chat-standin.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/marlon/.hermes/logs/jarvis-chat-standin.error.log</string>
+</dict>
+</plist>
