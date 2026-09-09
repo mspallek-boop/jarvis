@@ -347,6 +347,19 @@ footer{
       <div class="kv"><span>Cond.</span><b id="wxCond">—</b></div>
       <div class="kv"><span>Wind</span><b id="wxWind">—</b></div>
     </div>
+    <div class="panel"><h2><span>CALORIES</span><span class="num">12</span></h2>
+      <div class="kv"><span>Today</span><b id="calTotal">—</b></div>
+      <div class="kv"><span>Target</span><b id="calTarget">—</b></div>
+      <div class="kv"><span>Remaining</span><b id="calRemaining">—</b></div>
+      <div class="kv" id="calStepsRow" style="display:none"><span>Steps</span><b id="calSteps">—</b></div>
+      <div class="bar"><i id="calBar"></i></div>
+      <div id="calEntries" style="max-height:110px; overflow-y:auto; font-size:12.5px; margin-top:6px"></div>
+      <div style="margin-top:8px; display:flex; gap:6px">
+        <input id="calCalInput" type="number" min="1" placeholder="kcal" style="width:64px; background:#06101c; border:1px solid var(--line); color:#cfeefb; padding:6px 8px; font-family:'Rajdhani'; font-size:13px; outline:none">
+        <input id="calDescInput" type="text" placeholder="what did you eat…" style="flex:1; min-width:0; background:#06101c; border:1px solid var(--line); color:#cfeefb; padding:6px 8px; font-family:'Rajdhani'; font-size:13px; outline:none">
+        <button class="btn" id="calAddBtn" style="padding:6px 10px">LOG</button>
+      </div>
+    </div>
   </div>
 
   <div id="holoStage"></div>
@@ -819,11 +832,56 @@ async function refreshWeather(){
     $("wxWind").textContent=cur.wind_speed_10m!=null?Math.round(cur.wind_speed_10m)+" km/h":"—";
   }catch{ if(WX_CFG){ $("wxTemp").textContent="—"; $("wxCond").textContent="offline"; $("wxWind").textContent="—"; } }
 }
-refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();refreshModels();refreshWeather();
+
+/* ============================== calories ============================ */
+function localDay(){
+  const d=new Date(); // local calendar date, not UTC — matches the server's local-day bucketing
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+async function refreshCalories(){
+  try{
+    const today=localDay();
+    const r=await fetch(`/api/calories/days/${today}`); if(!r.ok)throw new Error(r.status);
+    const j=await r.json();
+    $("calTotal").textContent=`${j.total_calories} kcal`;
+    $("calTarget").textContent=j.target_calories!=null?`${j.target_calories} kcal`:"not set";
+    if(j.remaining_calories!=null){
+      $("calRemaining").textContent=`${j.remaining_calories} kcal`;
+      $("calRemaining").className=j.remaining_calories<0?"err":"";
+      $("calBar").style.width=Math.max(0,Math.min(100,j.total_calories/j.target_calories*100)).toFixed(0)+"%";
+    }else{ $("calRemaining").textContent="—"; $("calBar").style.width="0%"; }
+    if(j.steps!=null){ $("calStepsRow").style.display="flex"; $("calSteps").textContent=j.steps; }
+    $("calEntries").innerHTML=(j.entries||[]).length
+      ? j.entries.map(e=>`<div class="kv"><span>${escHtml(e.description)}${e.meal?` <span style="opacity:.6">(${escHtml(e.meal)})</span>`:""}</span>`
+        +`<b>${e.calories} <span class="calDel" data-id="${escHtml(e.id)}" style="cursor:pointer; color:var(--red)" title="delete">✕</span></b></div>`).join("")
+      : "<div style='color:var(--txt-dim)'>— no entries today —</div>";
+    $("calEntries").querySelectorAll(".calDel").forEach(el=>{
+      el.onclick=async()=>{
+        try{ await fetch(`/api/calories/entries/${encodeURIComponent(el.dataset.id)}`,{method:"DELETE"}); refreshCalories(); }catch{}
+      };
+    });
+  }catch{ $("calTotal").textContent="unavailable"; }
+}
+async function addCalorieEntry(){
+  const cal=parseInt($("calCalInput").value,10), desc=$("calDescInput").value.trim();
+  if(!cal||cal<1||!desc)return;
+  try{
+    const r=await fetch("/api/calories/entries",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({calories:cal,description:desc})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));addActivity("calorie log failed: "+(j.error||r.status));return}
+    $("calCalInput").value=""; $("calDescInput").value="";
+    refreshCalories();
+  }catch{ addActivity("calorie log failed: server unreachable"); }
+}
+$("calAddBtn").onclick=addCalorieEntry;
+$("calDescInput").addEventListener("keydown",e=>{if(e.key==="Enter")addCalorieEntry()});
+$("calCalInput").addEventListener("keydown",e=>{if(e.key==="Enter")addCalorieEntry()});
+
+refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();refreshModels();refreshWeather();refreshCalories();
 setInterval(refreshUsage,60000);
 setInterval(refreshWeather,900000);
 setInterval(refreshHealth,15000); setInterval(refreshJobs,60000); setInterval(refreshMachines,10000);
-setInterval(refreshSkills,120000);
+setInterval(refreshSkills,120000); setInterval(refreshCalories,60000);
 
 /* ====================== earcons (UI sound cues) ==================== */
 // Short synthesized tones for key events. WebAudio only (no assets, CSP-safe);

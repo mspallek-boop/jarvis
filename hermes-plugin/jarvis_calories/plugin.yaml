@@ -1,0 +1,10 @@
+name: jarvis_calories
+version: 1.0.0
+description: Persist local calorie entries and report daily, weekly, and multi-week progress
+provides_tools:
+  - calories_log
+  - calories_daily_summary
+  - calories_weekly_summary
+  - calories_progress
+  - calories_set_goal
+  - calories_weekly_checkin

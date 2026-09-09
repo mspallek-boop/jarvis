@@ -47,6 +47,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from RealtimeSTT import AudioToTextRecorder
 
+from calorie_tracker import CalorieTracker, CalorieValidationError
+
 try:
     import psutil
 except ImportError:  # machines panel degrades gracefully
@@ -58,6 +60,7 @@ LOG_PATH = ROOT / "logs" / "latency.jsonl"
 STATE_PATH = ROOT / "logs" / "hermes_sessions.json"
 USAGE_PATH = ROOT / "logs" / "usage_stats.json"
 FIRED_PATH = ROOT / "logs" / "proactive_fired.json"  # scheduler "already fired today" guard
+CALORIE_DB_PATH = ROOT / "logs" / "calorie_tracking.sqlite3"
 _USAGE_LOCK = threading.Lock()
 
 
@@ -1060,6 +1063,128 @@ async def usage() -> JSONResponse:
             asyncio.get_running_loop().create_task(refresh())
     out["elevenlabs"] = _ELEVEN_CACHE["data"]
     return JSONResponse(out)
+
+
+# ------------------------------------------------ calorie tracking (local SQLite)
+
+def _calorie_tracker() -> CalorieTracker:
+    """Return the local tracker repository without putting user health data in Hermes.
+
+    ``calories.database_path`` is intentionally a local filesystem setting, not
+    a secret.  Relative paths resolve beside this server; the default stays in
+    the already ignored ``server/logs`` runtime-state directory.
+    """
+    configured = (CFG.get("calories") or {}).get("database_path")
+    if not configured:
+        return CalorieTracker(CALORIE_DB_PATH)
+    path = Path(str(configured)).expanduser()
+    return CalorieTracker(path if path.is_absolute() else ROOT / path)
+
+
+async def _calorie_json(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception:
+        raise CalorieValidationError("request body must be JSON")
+    if not isinstance(body, dict):
+        raise CalorieValidationError("request body must be a JSON object")
+    return body
+
+
+def _calorie_error(exc: CalorieValidationError) -> JSONResponse:
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/api/calories/entries")
+async def calorie_add_entry(request: Request) -> JSONResponse:
+    """Persist one food/drink entry.  Body: calories, description, optional meal/occurred_at."""
+    try:
+        entry = await asyncio.to_thread(_calorie_tracker().add_entry, await _calorie_json(request))
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse({"entry": entry}, status_code=201)
+
+
+@app.delete("/api/calories/entries/{entry_id}")
+async def calorie_delete_entry(entry_id: str) -> JSONResponse:
+    try:
+        deleted = await asyncio.to_thread(_calorie_tracker().delete_entry, entry_id)
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    if not deleted:
+        return JSONResponse({"error": "entry not found"}, status_code=404)
+    return JSONResponse({"deleted": True, "id": entry_id})
+
+
+@app.get("/api/calories/days/{day}")
+async def calorie_day(day: str) -> JSONResponse:
+    try:
+        summary = await asyncio.to_thread(_calorie_tracker().day_summary, day)
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse(summary)
+
+
+@app.put("/api/calories/goal")
+async def calorie_set_goal(request: Request) -> JSONResponse:
+    """Set a daily target; it applies from effective_from (today by default)."""
+    try:
+        goal = await asyncio.to_thread(_calorie_tracker().set_goal, await _calorie_json(request))
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse({"goal": goal})
+
+
+@app.get("/api/calories/weeks/{week_start}")
+async def calorie_week(week_start: str) -> JSONResponse:
+    try:
+        summary = await asyncio.to_thread(_calorie_tracker().week_summary, week_start)
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse(summary)
+
+
+@app.post("/api/calories/checkins")
+async def calorie_checkin(request: Request) -> JSONResponse:
+    """Save/update a weekly progress note and optional weight measurement."""
+    try:
+        checkin = await asyncio.to_thread(_calorie_tracker().record_checkin, await _calorie_json(request))
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse({"checkin": checkin})
+
+
+@app.put("/api/activity/days/{day}")
+async def activity_sync_day(day: str, request: Request) -> JSONResponse:
+    """Upsert one day's HealthKit-sourced steps/active-energy/sugar aggregate.
+
+    Called by the iOS/watchOS app after it reads today's HealthKit totals;
+    macOS has no HealthKit and never calls this directly. Body:
+    steps, active_energy_kcal, dietary_sugar_g (all optional, at least one
+    required), matching the day in the path.
+    """
+    try:
+        body = await _calorie_json(request)
+        body["day"] = day
+        activity = await asyncio.to_thread(_calorie_tracker().record_activity, body)
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse({"activity": activity})
+
+
+@app.get("/api/calories/progress")
+async def calorie_progress(request: Request) -> JSONResponse:
+    try:
+        raw_weeks = request.query_params.get("weeks", "8")
+        weeks = int(raw_weeks)
+        summary = await asyncio.to_thread(
+            _calorie_tracker().progress, weeks, request.query_params.get("ending_on"),
+        )
+    except ValueError:
+        return _calorie_error(CalorieValidationError("weeks must be an integer between 1 and 52"))
+    except CalorieValidationError as exc:
+        return _calorie_error(exc)
+    return JSONResponse(summary)
 
 
 WS_CLIENTS: set = set()

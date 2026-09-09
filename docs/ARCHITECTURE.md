@@ -59,6 +59,13 @@ approval_request{data,run_id} · error · done{timing}
 | `/api/chat` | typed chat turn on the shared voice session |
 | `/api/machines` | host psutil stats + remote workers from config |
 | `/api/usage` | local token/char tally + ElevenLabs quota (needs user_read on the key) |
+| `/api/calories/entries` | `POST` a persistent local food/drink entry; `DELETE /{id}` corrects one |
+| `/api/calories/days/{date}` | local calendar-day entries, total, target, and remaining calories |
+| `/api/calories/weeks/{week_start}` | Monday–Sunday total, daily detail, and target comparison |
+| `/api/calories/goal` | `PUT` a daily target effective from a date (today by default) |
+| `/api/calories/checkins` | `POST` a weekly note and optional weight measurement |
+| `/api/calories/progress` | multi-week calorie and check-in history (`?weeks=8&ending_on=YYYY-MM-DD`) |
+| `/api/activity/days/{date}` | `PUT` one day's HealthKit-sourced steps/active-energy/sugar aggregate from the iOS/watchOS app; folded into `/api/calories/days/{date}` |
 | `/api/summon` | broadcasts a holographic media panel (`{media, src, title, position}` or `{action:"dismiss"}`) to every connected HUD over its WebSocket — this is what the bundled `hud_display` Hermes plugin calls |
 | port 9443 (separate app) | TLS reverse proxy of the Hermes dashboard with WebSocket bridge and frame-header stripping, so the HTTPS HUD can iframe it |
 
@@ -69,6 +76,17 @@ browser-originated WebSockets (Origin allowlist + cookie). Native clients (the
 PTT client, test scripts) send no Origin header and are exempt — the
 threat model is a malicious *website* doing cross-origin requests against your
 LAN, not your own processes. The Hermes API key never reaches any browser.
+
+## Local calorie diary
+
+Calorie entries, daily targets, and weekly check-ins live in a local SQLite
+file (`logs/calorie_tracking.sqlite3` by default; configurable with
+`calories.database_path`). The diary is durable across restarts and is never
+sent to Hermes, an LLM provider, or another external service by the server.
+The optional `hermes-plugin/jarvis_calories` tool adapter calls only this local
+API. When that plugin is used, its requested result becomes part of the Hermes
+tool response and therefore follows the privacy posture of the configured
+Hermes/LLM provider.
 
 ## Latency profile (Apple Silicon, small.en on CPU)
 

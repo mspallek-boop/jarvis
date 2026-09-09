@@ -33,3 +33,6 @@ apple/DerivedData*/
 
 # Consolidated local JARVIS data (builds, runtime state, credentials)
 LocalData/
+
+# JARVIS writes generated documents here; they are personal, not source.
+Jarvis Output/

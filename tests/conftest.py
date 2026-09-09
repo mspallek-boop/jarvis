@@ -22,6 +22,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_PY = REPO_ROOT / "server" / "server.py"
+# server.py is normally launched directly, which puts this directory on
+# sys.path. Mirror that production import context for its local modules.
+if str(SERVER_PY.parent) not in sys.path:
+    sys.path.insert(0, str(SERVER_PY.parent))
 
 
 # --------------------------------------------------------------------------- #
@@ -125,7 +129,7 @@ def server_mod(network_guard):
 @pytest.fixture(autouse=True)
 def isolated_server_files(server_mod, monkeypatch, tmp_path):
     """Keep test usage/session/latency state independent of real local files."""
-    for name in ("LOG_PATH", "STATE_PATH", "USAGE_PATH", "FIRED_PATH"):
+    for name in ("LOG_PATH", "STATE_PATH", "USAGE_PATH", "FIRED_PATH", "CALORIE_DB_PATH"):
         monkeypatch.setattr(server_mod, name, tmp_path / (name.lower() + ".json"))
 
 

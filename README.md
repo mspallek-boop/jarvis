@@ -143,6 +143,7 @@ evening.
 | Cinematic boot | press `B` |
 | Kanban / dashboards | VIEWS panel → animated pop-up viewers |
 | Phone | open the HUD → Add to Home Screen |
+| Calorie diary | HUD panel + local API + optional Hermes tools; see [calorie tracking](docs/CALORIE_TRACKING.md) |
 
 ## Repo layout
 

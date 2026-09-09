@@ -56,6 +56,12 @@ usage:
   llm_cost_per_mtok_input: 0
   llm_cost_per_mtok_output: 0
 
+calories:
+  # Local SQLite diary for durable calorie tracking. Relative paths resolve
+  # from server/. It contains health-related personal data; keep it local and
+  # include it in your encrypted backup if you want its history preserved.
+  database_path: logs/calorie_tracking.sqlite3
+
 server:
   host: 0.0.0.0              # wildcard bind (required for non-root port 443 on macOS)
   port: 8765                 # plain ws:// for the Python push-to-talk client
