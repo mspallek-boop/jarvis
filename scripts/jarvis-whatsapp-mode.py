@@ -130,7 +130,36 @@ def hermes_binary() -> str:
                 if (Path.home() / ".local/bin/hermes").exists() else "hermes"))
 
 
+GATEWAY_LABEL = "ai.hermes.gateway"
+GATEWAY_PLIST = Path.home() / "Library/LaunchAgents" / f"{GATEWAY_LABEL}.plist"
+
+
 def restart_gateway() -> bool:
+    """Ask launchd to restart the gateway, rather than asking the gateway to.
+
+    Turning the stand-in on is normally a Hermes tool call, so this script runs
+    as a child of the gateway. `hermes gateway restart` stops the service
+    first, which kills this process before it can start it again — launchd's
+    KeepAlive then brought the gateway back roughly a minute later, and for
+    that whole minute JARVIS answered nothing and the app showed a timeout.
+    That is the "Vertretung setzt den Agenten aus" fault.
+
+    `launchctl kickstart -k` hands the whole restart to launchd in one call.
+    The request is accepted before anything is killed, so it still completes
+    when this process dies with the old gateway, and the new one starts at
+    once instead of after a KeepAlive backoff.
+    """
+    if GATEWAY_PLIST.exists():
+        try:
+            done = subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{GATEWAY_LABEL}"],
+                capture_output=True, timeout=30)
+            if done.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+        # Fall through: an uninstalled or renamed service is a reason to try
+        # the CLI, not a reason to report a failed switch.
     try:
         done = subprocess.run([hermes_binary(), "gateway", "restart"],
                               capture_output=True, timeout=120)

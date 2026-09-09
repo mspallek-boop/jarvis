@@ -30,7 +30,10 @@ def mode(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     sys.modules["wa_mode"] = module
     spec.loader.exec_module(module)
-    module.restart_gateway = lambda: True     # never touch the real gateway
+    # Keep the real one reachable: the restart path has its own tests below,
+    # and everything else must never touch the real gateway.
+    module._real_restart_gateway = module.restart_gateway
+    module.restart_gateway = lambda: True
     module._env_path = env
     return module
 
@@ -179,3 +182,61 @@ def test_a_backup_of_the_env_is_written_before_any_change(mode):
     run(mode, "on", "--contact", "491701234567")
     backups = list(Path(mode._env_path).parent.glob("*.bak.wamode.*"))
     assert backups and backups[0].read_text() == ENV_BEFORE
+
+
+# --------------------------------------------------------------- gateway restart
+
+def test_restart_goes_through_launchd_so_the_agent_does_not_stall(mode, monkeypatch, tmp_path):
+    """Turning the stand-in on must not ask the gateway to kill itself.
+
+    The switch normally runs as a Hermes tool call, so it is a child of the
+    gateway. `hermes gateway restart` stopped the service and killed this
+    process with it; launchd's KeepAlive brought the gateway back about a
+    minute later, and for that minute JARVIS timed out. launchd is asked to do
+    the whole restart instead, so it completes even when the caller dies.
+    """
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    assert mode._real_restart_gateway() is True
+    assert calls == [["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]]
+
+
+def test_restart_falls_back_to_the_cli_when_no_service_is_installed(mode, monkeypatch, tmp_path):
+    """A gateway nobody installed as a service is still a gateway to restart."""
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", tmp_path / "absent.plist")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    assert mode._real_restart_gateway() is True
+    assert calls[0][1:] == ["gateway", "restart"]
+
+
+def test_a_refused_kickstart_still_tries_the_cli(mode, monkeypatch, tmp_path):
+    """A renamed or unloaded label must not be reported as a failed switch."""
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return type("Done", (), {"returncode": 0 if argv[0] != "launchctl" else 3})()
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    assert mode._real_restart_gateway() is True
+    assert calls[0][0] == "launchctl"
+    assert calls[1][1:] == ["gateway", "restart"]
