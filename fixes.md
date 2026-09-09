@@ -445,7 +445,28 @@ ohne Portkollision durchspielt. `BrokenPipeError` beim Client-Abbruch gezielt
 abfangen und nicht als Gateway-Crash loggen.
 
 ### 13. OpenAI-Stimmen — Butler-/JARVIS-Stimme und Sprechtempo
-**Offen für Monet.** Die verfügbaren OpenAI-Stimmen sollen aktualisiert und
+**Weitgehend erledigt am 2026-09-09.** Die Stimmenliste war unvollständig:
+`marin` und `cedar` fehlten ganz, alle dreizehn wurden gegen die API geprüft.
+Der Live-Pfad stand auf `elevenlabs`, dessen Kontingent leer ist, fiel also auf
+die macOS-Systemstimme zurück; er steht jetzt auf `openai` mit
+`gpt-4o-mini-tts`, gemessen die schnellste Variante (erste Bytes nach 0,6–1,0 s
+gegenüber 1,4–2,3 s bei `tts-1`/`tts-1-hd`) und als einzige über eine
+Anweisung steuerbar.
+
+Die langen Pausen kamen nicht vom Modell: Der Player sprach einen Satz, wartete
+bis das letzte Sample den Lautsprecher verlassen hatte, baute die Engine ab und
+forderte erst dann den nächsten Satz an — also eine volle Netzrunde an jeder
+Satzgrenze. Sätze werden jetzt vorausgeladen und in einen Player geschoben, der
+dazwischen nie stoppt. Die Anweisung fordert zusätzlich zügiges, flüssiges
+Sprechen und kurze Pausen; das Tempo gehört in die Anweisung und nicht in eine
+Abspielrate, die die Tonhöhe anheben würde.
+
+Offen bleibt allein die Wahl der Stimme selbst: `cedar` ist vorläufig aktiv
+(schnellster Start, zügiges Tempo). Vergleichsproben von `ash`, `onyx`,
+`ballad`, `cedar`, `marin` und `verse` mit demselben Butler-Text liegen dem
+Nutzer vor; seine Wahl kommt in `JARVIS_TTS_OPENAI_VOICE`.
+
+**Ursprünglicher Auftrag:** Die verfügbaren OpenAI-Stimmen sollen aktualisiert und
 praktisch gegeneinander getestet werden. Gesucht ist keine bloß angenehme
 Stimme, sondern eine markante, ruhige Butler-/JARVIS-Anmutung: klar, souverän,
 leicht trocken und auch bei höherem Tempo verständlich.
