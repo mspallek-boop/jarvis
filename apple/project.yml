@@ -67,6 +67,15 @@ targets:
         NSSpeechRecognitionUsageDescription: JARVIS wandelt deine Sprache über Apples Spracherkennung in Text um.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # How the wake-word listener reaches a running JARVIS. It is a local
+        # process talking to a local app, so no port and no socket: `open -g
+        # jarvis://wake` is delivered by Launch Services, needs no permission
+        # the app does not already have, and does nothing at all when JARVIS
+        # is not running.
+        CFBundleURLTypes:
+          - CFBundleURLName: at.marlon.jarvis.macos
+            CFBundleURLSchemes:
+              - jarvis
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: at.marlon.jarvis.macos

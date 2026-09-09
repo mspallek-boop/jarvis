@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showingFiles = false
     @State private var showingHistory = false
     @State private var runsExpanded = false
+    @State private var openStandinID: String?
     @State private var voiceControlIsVisible = true
     @Namespace private var thinkingOrbNamespace
 
@@ -111,6 +112,9 @@ struct ContentView: View {
             }
         }
         .foregroundStyle(ink)
+        // Moved down from the Scene: up there it made the whole App body —
+        // and with it the main menu — depend on the model.
+        .preferredColorScheme(model.theme.colorScheme)
         #if os(macOS)
         .background {
             ClipboardImagePasteHandler(enabled: !isPresentingSheet) { data in
@@ -262,9 +266,123 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.25), value: model.localRuns.count)
     }
 
+    /// What is still running without the app: one quiet line per stand-in,
+    /// with the time left on it.
+    ///
+    /// It has to be here, on the page the user actually looks at, because a
+    /// stand-in outlives the window. Closing the app does not end it, and
+    /// something that answers a real person on your behalf must never be
+    /// invisible — the whole failure it exists to prevent is finding out
+    /// afterwards. Quiet, not hidden: small, dim, and gone by itself when the
+    /// clock runs out.
+    private var standingTasks: some View {
+        VStack(spacing: 6) {
+            ForEach(model.standins) { standin in
+                let open = openStandinID == standin.id
+                VStack(spacing: 10) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.26)) {
+                            openStandinID = open ? nil : standin.id
+                        }
+                    } label: {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let left = standin.endsAt.timeIntervalSince(context.date)
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.wave.2")
+                                    .font(.system(size: 10))
+                                Text(standin.name)
+                                Text("·")
+                                Text(Self.timeLeft(left))
+                                    .monospacedDigit()
+                                if standin.exchanges > 0 {
+                                    Text("· \(standin.exchanges) \(standin.exchanges == 1 ? "Nachricht" : "Nachrichten")")
+                                }
+                                if !standin.announced {
+                                    // She was never told, so the line says so
+                                    // rather than letting the user assume.
+                                    Text("· ohne Ansage")
+                                }
+                                Image(systemName: open ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 8))
+                                    .opacity(0.7)
+                            }
+                            .font(.caption2)
+                            .tracking(0.8)
+                            .foregroundStyle(ink.opacity(open ? 0.75 : left <= 300 ? 0.62 : 0.4))
+                            .contentShape(Rectangle())
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    #if os(macOS)
+                    .focusable(false)
+                    #endif
+                    .accessibilityLabel("Vertretung für \(standin.name), \(standin.exchanges) Nachrichten")
+
+                    if open { standinDetail(standin) }
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: model.standins)
+    }
+
+    /// What has happened in this chat so far, in JARVIS's own words.
+    ///
+    /// Deliberately his account and not the messages: he already reports in
+    /// these words, so opening the task shows the whole run instead of only
+    /// the last nudge — without moving anyone's messages out of WhatsApp.
+    @ViewBuilder
+    private func standinDetail(_ standin: JarvisAPIClient.Standin) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if standin.history.isEmpty {
+                Text("Noch nichts passiert.")
+                    .font(.caption2)
+                    .foregroundStyle(ink.opacity(0.4))
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(standin.history.enumerated()), id: \.offset) { _, note in
+                            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                                Text(note.time, format: .dateTime.hour().minute())
+                                    .monospacedDigit()
+                                    .foregroundStyle(ink.opacity(0.32))
+                                Text(note.gist)
+                                    .foregroundStyle(ink.opacity(note.urgent ? 0.85 : 0.6))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .font(.caption2)
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+            }
+            Text("seit \(standin.startedAtLabel)")
+                .font(.system(size: 9))
+                .foregroundStyle(ink.opacity(0.3))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: 420)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(ink.opacity(0.06))
+        )
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// "1:54 Std", "54 Min", "gleich" — never a jittering seconds counter for
+    /// something that runs for hours.
+    static func timeLeft(_ seconds: TimeInterval) -> String {
+        let left = max(0, Int(seconds.rounded()))
+        if left < 60 { return "gleich vorbei" }
+        let minutes = left / 60
+        if minutes < 60 { return "noch \(minutes) Min" }
+        return "noch \(minutes / 60):\(String(format: "%02d", minutes % 60)) Std"
+    }
+
     private var voiceStage: some View {
         VStack(spacing: 24) {
             Spacer(minLength: 20)
+            standingTasks
             // Nothing is drawn while fewer than two tasks run, so an idle app
             // looks exactly as it did before multitasking existed.
             taskBlobs

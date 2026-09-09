@@ -12,6 +12,29 @@ struct SpeechVoiceOption: Identifiable {
     }
 }
 
+/// Hands audio buffers from the capture thread to whichever recogniser request
+/// is current. `SFSpeechRecognizer` closes its request at the first pause it
+/// hears, so the request is replaced underneath a tap that keeps running — the
+/// tap must therefore never hold one directly.
+private final class RequestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+
+    func replace(with new: SFSpeechAudioBufferRecognitionRequest?) {
+        lock.lock()
+        let old = request
+        request = new
+        lock.unlock()
+        old?.endAudio()
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        request?.append(buffer)
+    }
+}
+
 @MainActor
 final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private static let voiceDefaultsKey = "speechVoiceIdentifier"
@@ -45,7 +68,10 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     var shouldKeepListening: (() -> Bool)?
     /// How long a pause may be before the sentence counts as finished. 850ms
     /// cut people off mid-thought; a breath between clauses is not an ending.
-    @Published var utterancePause: Double = UserDefaults.standard.object(forKey: "utterancePause") as? Double ?? 1.6 {
+    /// 1.6s was still too short, because this timer does not measure silence —
+    /// it measures the transcript standing still, and the on-device recogniser
+    /// lags behind the voice by a good part of a second.
+    @Published var utterancePause: Double = UserDefaults.standard.object(forKey: "utterancePause") as? Double ?? 2.5 {
         didSet { UserDefaults.standard.set(utterancePause, forKey: Self.pauseDefaultsKey) }
     }
     /// Seconds of silence after which listening stops. Zero means never.
@@ -90,6 +116,11 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     }
     @Published private(set) var isListening = false
     @Published private(set) var transcript = ""
+    /// When the transcript last grew. "Is the user still talking?" is a
+    /// question about the last few seconds — an empty transcript is not the
+    /// same thing, and a single cough would otherwise count as talking for
+    /// the rest of the session.
+    @Published private(set) var lastHeard = Date.distantPast
     @Published var errorMessage: String?
     @Published var selectedVoiceIdentifier: String {
         didSet {
@@ -104,6 +135,19 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
+    /// The tap runs on an audio thread and the request behind it is swapped
+    /// every time a recognition segment closes, so the tap cannot capture one.
+    private let requestBox = RequestBox()
+    /// Words from recognition segments Apple has already closed. The live
+    /// segment is appended to this, which is what makes a pause survivable.
+    private var committedTranscript = ""
+    /// Identifies the live recognition segment. A callback from a segment that
+    /// has already been replaced must not write over the current transcript.
+    private var segmentID = UUID()
+    /// A recogniser that fails on every restart must not be restarted forever.
+    /// Past this the utterance is handed over rather than dropped.
+    private var segmentRestarts = 0
+    private static let maxSegmentRestarts = 24
     private let synthesizer = AVSpeechSynthesizer()
     private var isStarting = false
 
@@ -181,13 +225,8 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         }
         if stoppingSpeech { stopSpeaking() }
         transcript = ""
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
-        // The on-device German model does not know product or brand names and
-        // renders "Skyr" as "Skar". These bias it without leaving the device.
-        request.contextualStrings = recognitionVocabulary
-        self.request = request
+        committedTranscript = ""
+        segmentRestarts = 0
 
         do {
             #if os(iOS)
@@ -225,55 +264,120 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
                 ? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate,
                                 channels: 1, interleaved: false)
                 : nil
+            // The recogniser has to exist before audio flows, or the first
+            // word of the sentence lands in an empty box.
+            isListening = true
+            startRecognitionSegment(capture: id)
+            let box = requestBox
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 guard let monoFormat, !buffer.format.isInterleaved,
                       let source = buffer.floatChannelData,
                       let mono = AVAudioPCMBuffer(pcmFormat: monoFormat,
                                                   frameCapacity: buffer.frameLength),
                       let destination = mono.floatChannelData else {
-                    request.append(buffer)
+                    box.append(buffer)
                     return
                 }
                 mono.frameLength = buffer.frameLength
                 destination[0].update(from: source[0], count: Int(buffer.frameLength))
-                request.append(mono)
+                box.append(mono)
             }
             tapInstalled = true
             engine.prepare()
             try engine.start()
-            isListening = true
             scheduleIdleStop()
-            task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                Task { @MainActor in
-                    guard let self, self.captureID == id, self.isListening else { return }
-                    if let result {
-                        let text = result.bestTranscription.formattedString
-                        if self.echoIsInFlight {
-                            // While JARVIS talks — and in the gaps between two
-                            // streamed sentences, where its echo is still
-                            // arriving — a partial result is only interesting
-                            // as evidence that the user cut in.
-                            guard self.interruptsBySpeaking, self.bargeInAvailable,
-                                  self.bargeIn.shouldInterrupt(partial: text) else { return }
-                            self.stopSpeaking()
-                        }
-                        if text != self.transcript {
-                            self.transcript = text
-                            self.scheduleEndOfUtterance(id: id)
-                            self.scheduleIdleStop()
-                        }
-                        if result.isFinal { self.completeUtterance() }
-                    }
-                    if error != nil, self.isListening {
-                        self.finishAudio()
-                        self.errorMessage = "Sprachaufnahme beendet. Tippe auf JARVIS, um weiterzusprechen."
-                    }
-                }
-            }
         } catch {
             finishAudio()
             errorMessage = "Mikrofon konnte nicht gestartet werden."
         }
+    }
+
+    /// Open one recognition segment on the running capture.
+    ///
+    /// `SFSpeechRecognizer` ends a segment at the first pause it hears: it
+    /// reports `isFinal` and the task dies. Treating that as the end of the
+    /// sentence is what cut people off mid-thought and — when the segment ended
+    /// with an error instead — threw the whole dictated sentence away. A closed
+    /// segment now only ends the *segment*: the words are kept and a new one is
+    /// opened, so nothing but the silence timer decides when the user is done.
+    private func startRecognitionSegment(capture: UUID) {
+        guard let recognizer, captureID == capture else { return }
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+        // The on-device German model does not know product or brand names and
+        // renders "Skyr" as "Skar". These bias it without leaving the device.
+        request.contextualStrings = recognitionVocabulary
+        self.request = request
+        requestBox.replace(with: request)
+
+        let segment = UUID()
+        segmentID = segment
+        task?.cancel()
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self, self.captureID == capture, self.segmentID == segment,
+                      self.isListening else { return }
+                if let result {
+                    let text = Self.joined(self.committedTranscript,
+                                           result.bestTranscription.formattedString)
+                    if self.echoIsInFlight {
+                        // While JARVIS talks — and in the gaps between two
+                        // streamed sentences, where its echo is still
+                        // arriving — a partial result is only interesting
+                        // as evidence that the user cut in.
+                        guard self.interruptsBySpeaking, self.bargeInAvailable,
+                              self.bargeIn.shouldInterrupt(partial: text) else { return }
+                        self.stopSpeaking()
+                    }
+                    if text != self.transcript {
+                        self.transcript = text
+                        self.lastHeard = Date()
+                        // Words arrived, so the recogniser is healthy: the
+                        // restart budget is about a recogniser that is not.
+                        self.segmentRestarts = 0
+                        self.scheduleEndOfUtterance(id: capture)
+                        self.scheduleIdleStop()
+                    }
+                    if result.isFinal {
+                        self.closeSegment(keeping: text, capture: capture)
+                        return
+                    }
+                }
+                if error != nil {
+                    // On-device recognition errors out as a matter of course —
+                    // a stretch of silence, a segment timeout. Ending the
+                    // capture here is what made the sentence disappear.
+                    self.closeSegment(keeping: self.transcript, capture: capture)
+                }
+            }
+        }
+    }
+
+    /// Keep what the closed segment heard and open the next one.
+    private func closeSegment(keeping text: String, capture: UUID) {
+        committedTranscript = text
+        transcript = text
+        guard segmentRestarts < Self.maxSegmentRestarts else {
+            // The recogniser is not coming back. Hand over what was said
+            // rather than discarding it — and if it never heard anything,
+            // say so, or the microphone just dies without a word.
+            if transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finishAudio()
+                errorMessage = "Sprachaufnahme beendet. Tippe auf JARVIS, um weiterzusprechen."
+            } else {
+                completeUtterance()
+            }
+            return
+        }
+        segmentRestarts += 1
+        startRecognitionSegment(capture: capture)
+    }
+
+    private static func joined(_ committed: String, _ segment: String) -> String {
+        if committed.isEmpty { return segment }
+        if segment.isEmpty { return committed }
+        return committed + " " + segment
     }
 
     /// Stops listening after a stretch of silence, so the microphone is not
@@ -533,6 +637,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
 
     private func finishAudio() {
         captureID = UUID()
+        segmentID = UUID()
         idleTask?.cancel()
         idleTask = nil
         silenceTask?.cancel()
@@ -542,10 +647,11 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
         }
-        request?.endAudio()
+        requestBox.replace(with: nil)
         task?.cancel()
         task = nil
         request = nil
+        committedTranscript = ""
         isListening = false
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)

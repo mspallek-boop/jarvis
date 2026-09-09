@@ -27,6 +27,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// The wake word's way in: `open -g jarvis://wake`.
+    ///
+    /// Not a second front door. It does exactly what a double-tap on the hotkey
+    /// does — wake JARVIS and open the microphone — because that is the gesture
+    /// the user already has for "listen, hands free", and a wake word is the
+    /// same intention said out loud.
+    ///
+    /// One host, no parameters, deliberately: a URL scheme is open to anything
+    /// on the machine that can call `open`, so the only thing it may express is
+    /// "start listening". It cannot make JARVIS say, send or answer anything.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard urls.contains(where: { $0.scheme == "jarvis" && $0.host == "wake" }) else { return }
+        MainActor.assumeIsolated {
+            guard let model else { return }
+            Task { await model.wakeAndListen() }
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         MainActor.assumeIsolated {
             // The pill is the window folded up, so unfolding it *is* the

@@ -5,7 +5,19 @@ import SwiftUI
 
 @main
 struct JARVISApp: App {
-    @StateObject private var model = AppModel()
+    /// Held, deliberately not observed.
+    ///
+    /// As a `@StateObject` every published change re-evaluated this whole
+    /// Scene, and a Scene carries the main menu: SwiftUI answered each change
+    /// by rebuilding the menu bar. `updateRun` mutates `localRuns` once per
+    /// streamed token, so an answer arriving meant dozens of menu rebuilds a
+    /// second — and one of them landed inside another and threw out of
+    /// `-[NSMenu itemArray]`, which is the abort in the crash report.
+    ///
+    /// Nothing in this Scene needs to react to the model; the views below do,
+    /// and they subscribe through `@EnvironmentObject` on their own. `@State`
+    /// keeps the object alive for the process without subscribing to it.
+    @State private var model = AppModel()
     #if os(macOS)
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
@@ -14,7 +26,6 @@ struct JARVISApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
-                .preferredColorScheme(model.theme.colorScheme)
                 .tint(.blue)
                 #if os(macOS)
                 // The delegate is built by SwiftUI, so it cannot hold the model

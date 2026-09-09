@@ -208,6 +208,10 @@ final class AppModel: ObservableObject {
     /// the orb tap cancels it. Tapping another blob focuses that one instead.
     @Published var focusedRunID: String?
     @Published private(set) var runs: [JarvisAPIClient.RunStatus] = []
+    /// Tasks that outlive the app — a stand-in in one chat, running until its
+    /// own clock says stop. The Mac keeps them, so closing the window does not
+    /// end them; showing them is the only way the user can tell.
+    @Published private(set) var standins: [JarvisAPIClient.Standin] = []
     @Published private(set) var notificationBanner: String?
 
     var isWorking: Bool { !localRuns.isEmpty }
@@ -263,6 +267,15 @@ final class AppModel: ObservableObject {
     let hotkey = HotkeyMonitor()
     /// The small panel is shown while the main window is out of the way.
     @Published private(set) var overlayVisible = false
+    /// True only for a pill the key summoned out of nothing. The fold is a
+    /// decision the user made and stays until they undo it; a summon is a
+    /// question they asked, and once it is answered the pill has no business
+    /// still being there.
+    private var overlaySummoned = false
+    private var overlayDismissTask: Task<Void, Never>?
+    /// Long enough to add "one more thing", short enough that a finished
+    /// exchange does not leave a pill sitting there for the rest of the day.
+    private static let summonedOverlayLinger: Double = 9
     private let overlayPanel = OverlayPanelController()
 
     /// Fold the window into the pill. The pill has to exist first, because the
@@ -270,6 +283,9 @@ final class AppModel: ObservableObject {
     /// makes the two read as one thing.
     func collapseToOverlay() {
         guard !overlayVisible else { return }
+        // Folded on purpose: this one stays until the user says otherwise.
+        overlaySummoned = false
+        overlayDismissTask?.cancel()
         overlayPanel.show(model: self)
         overlayPanel.onClick = { [weak self] in self?.expandFromOverlay() }
         overlayVisible = true
@@ -297,7 +313,79 @@ final class AppModel: ObservableObject {
         overlayPanel.popUp(model: self)
         overlayPanel.onClick = { [weak self] in self?.expandFromOverlay() }
         overlayVisible = true
+        overlaySummoned = true
         hotkey.active = true
+        // A summon that turns out to be a mis-press should not cost anything
+        // either, so the countdown starts with the pill rather than with the
+        // first answer.
+        scheduleOverlayDismiss()
+    }
+
+    /// Wake JARVIS and open the microphone in one go.
+    ///
+    /// The hands-free double tap on the hotkey and the wake word are two ways
+    /// of saying the same thing, so they end up here rather than each growing
+    /// their own version of it.
+    func wakeAndListen() async {
+        // Exactly one of the two on screen, ever — the same rule the fold and
+        // the reopen already keep. With the window in front there is nothing to
+        // summon: he is standing there. A pill over his own window is two
+        // JARVISes, and the wake word must not be the one gesture that produces
+        // that.
+        if !mainWindowIsOnScreen { wakeToOverlay() }
+        speech.setMicrophoneMuted(false)
+        await speech.start()
+        scheduleOverlayDismiss()
+    }
+
+    /// Whether the main window is really in front of the user: not folded into
+    /// the pill, not minimised, not closed.
+    private var mainWindowIsOnScreen: Bool {
+        guard let window = WindowTransition.mainWindow() else { return false }
+        return window.isVisible && !window.isMiniaturized
+    }
+
+    /// Let a summoned pill sink away once the exchange is over.
+    ///
+    /// "Over" is silence, not the last spoken word: the microphone stays open
+    /// after an answer precisely so the user can carry on, and dropping the
+    /// pill the moment JARVIS stops talking would cut that off. So the
+    /// countdown restarts instead of firing whenever anything is still going
+    /// on — a run, playback, a half-spoken sentence, a held key.
+    func scheduleOverlayDismiss() {
+        overlayDismissTask?.cancel()
+        guard overlaySummoned, overlayVisible else { return }
+        overlayDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.summonedOverlayLinger))
+            guard !Task.isCancelled, let self, self.overlaySummoned, self.overlayVisible
+            else { return }
+            // Silence, not an empty transcript: the microphone stays open
+            // after an answer, so anything it happened to pick up would
+            // otherwise keep the pill alive indefinitely.
+            let quietFor = Date().timeIntervalSince(self.speech.lastHeard)
+            guard !self.isWorking, !self.speech.isSpeaking,
+                  quietFor >= Self.summonedOverlayLinger,
+                  !self.hotkey.isHeld, !self.hotkey.handsFree
+            else { self.scheduleOverlayDismiss(); return }
+            self.dismissSummonedOverlay()
+        }
+    }
+
+    /// Send the summoned pill back where it came from.
+    func dismissSummonedOverlay() {
+        guard overlayVisible, overlaySummoned else { return }
+        overlayDismissTask?.cancel()
+        overlayDismissTask = nil
+        overlaySummoned = false
+        overlayVisible = false
+        // The microphone goes with it. A capture left open behind a pill that
+        // is no longer on screen is the "talking into the dark" fault, only
+        // with nobody there to notice it.
+        speech.suspend()
+        // The key stays armed: with no window and no pill, it is the only way
+        // back — which is the whole reason `wakeToOverlay` exists.
+        hotkey.active = true
+        overlayPanel.dropDown {}
     }
 
     /// The key is armed exactly when the main window is not standing in front
@@ -310,6 +398,8 @@ final class AppModel: ObservableObject {
     /// Spring the window back out of the pill, centred.
     func expandFromOverlay() {
         guard overlayVisible else { return }
+        overlaySummoned = false
+        overlayDismissTask?.cancel()
         overlayVisible = false
         hotkey.active = false
         let source = overlayPanel.frame
@@ -479,7 +569,14 @@ final class AppModel: ObservableObject {
         // going, silence means the user is listening, not gone.
         speech.shouldKeepListening = { [weak self] in self?.isWorking ?? false }
         speech.onSpeechFinished = { [weak self] in
-            Task { await self?.resumeVoice() }
+            Task {
+                await self?.resumeVoice()
+                #if os(macOS)
+                // He has finished talking, so the silence that decides whether
+                // a summoned pill stays starts here.
+                self?.scheduleOverlayDismiss()
+                #endif
+            }
         }
         #if os(macOS)
         // Holding the key opens the microphone even when the app is not in
@@ -701,6 +798,7 @@ final class AppModel: ObservableObject {
         do {
             let client = try makeClient()
             runs = try await client.runs().runs
+            standins = try await client.standins()
         } catch {
             // The status board is supplementary; a temporary timeout must not
             // turn a healthy chat connection into an error banner.
@@ -745,6 +843,10 @@ final class AppModel: ObservableObject {
     private func startStatusPolling() {
         statusPollTask?.cancel()
         statusPollTask = Task { [weak self] in
+            // Once straight away: a stand-in that is already running would
+            // otherwise be invisible for the first eighteen seconds, which is
+            // exactly when the user is looking.
+            await self?.refreshStatus()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(18))
                 guard !Task.isCancelled, let self, self.voiceForeground else { return }
@@ -920,6 +1022,9 @@ final class AppModel: ObservableObject {
             } else if !isWorking {
                 speech.stopSpeaking()
                 await resumeVoice()
+                #if os(macOS)
+                scheduleOverlayDismiss()
+                #endif
             }
         } catch {
             guard localRuns.contains(where: { $0.id == id }) else { return }
@@ -929,6 +1034,11 @@ final class AppModel: ObservableObject {
             lastError = error.localizedDescription
             connection = .offline(error.localizedDescription)
             appendMessage(ChatMessage(role: .system, text: error.localizedDescription))
+            #if os(macOS)
+            // A failed turn is still a finished one; the pill must not be left
+            // standing there because the answer never came.
+            scheduleOverlayDismiss()
+            #endif
         }
     }
 

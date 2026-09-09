@@ -105,6 +105,40 @@ final class OverlayPanelController {
         }
     }
 
+    /// Sinks the pill back into the Dock — the exact inverse of `popUp`.
+    ///
+    /// It is the ending the summoned pill needs: `hide()` makes it vanish,
+    /// which reads as a glitch, and the whole point of coming up out of the
+    /// Dock was to say where JARVIS was. Going back the same way says he
+    /// returned there rather than broke.
+    func dropDown(then done: @escaping () -> Void = {}) {
+        guard let panel else { done(); return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            panel.orderOut(nil)
+            done()
+            return
+        }
+        let screen = panel.screen ?? NSScreen.main
+        let bottom = screen?.frame.minY ?? panel.frame.minY
+        var target = panel.frame
+        target.origin.y = bottom - target.height
+        target = target.insetBy(dx: panel.frame.width * 0.18, dy: 0)
+        NSAnimationContext.runAnimationGroup { context in
+            // Leaving, not arriving: the user did not ask for this and should
+            // not have to watch it. Quicker than the way up, and no overshoot.
+            context.duration = 0.3
+            context.timingFunction = WindowTransition.leaving
+            panel.animator().setFrame(target, display: true)
+            panel.animator().alphaValue = 0
+        } completionHandler: {
+            panel.orderOut(nil)
+            // Put it back the way `popUp` expects to find it.
+            panel.setFrame(NSRect(origin: panel.frame.origin, size: Self.size), display: false)
+            panel.alphaValue = 1
+            done()
+        }
+    }
+
     private func make(model: AppModel) -> NSPanel {
         let panel = KeyablePanel(
             contentRect: NSRect(origin: .zero, size: Self.size),

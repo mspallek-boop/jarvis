@@ -91,6 +91,41 @@ struct JarvisAPIClient {
         let count: Int
     }
 
+    /// A task that outlives the app: JARVIS standing in for the user in one
+    /// chat until `until`. The bridge deliberately sends no phone number —
+    /// a name and a time is all the interface has any use for.
+    struct Standin: Decodable, Identifiable, Equatable {
+        /// One line JARVIS wrote after answering: what it was about, not what
+        /// was said. The messages themselves stay in WhatsApp.
+        struct Note: Decodable, Equatable, Hashable {
+            let at: Double
+            let gist: String
+            let urgent: Bool
+
+            var time: Date { Date(timeIntervalSince1970: at) }
+        }
+
+        let id: String
+        let name: String
+        let until: Double
+        let started: Double
+        let announced: Bool
+        let exchanges: Int
+        let history: [Note]
+
+        var endsAt: Date { Date(timeIntervalSince1970: until) }
+
+        var startedAtLabel: String {
+            Date(timeIntervalSince1970: started)
+                .formatted(date: .omitted, time: .shortened)
+        }
+    }
+
+    struct StandinsResponse: Decodable {
+        let standins: [Standin]
+        let count: Int
+    }
+
     struct Notification: Decodable, Identifiable, Equatable {
         let id: Int
         let kind: String
@@ -244,6 +279,11 @@ struct JarvisAPIClient {
     func runs() async throws -> RunsResponse {
         let data = try await request(path: "runs", method: "GET", body: Optional<String>.none, timeout: 8)
         return try JSONDecoder().decode(RunsResponse.self, from: data)
+    }
+
+    func standins() async throws -> [Standin] {
+        let data = try await request(path: "standins", method: "GET", body: Optional<String>.none, timeout: 8)
+        return try JSONDecoder().decode(StandinsResponse.self, from: data).standins
     }
 
     func notifications(since: Int, unreadOnly: Bool = false) async throws -> NotificationsResponse {
