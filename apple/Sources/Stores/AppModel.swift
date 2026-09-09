@@ -233,7 +233,8 @@ final class AppModel: ObservableObject {
     private func beginRun(id: String, prompt: String) {
         localRuns.append(LocalRun(id: id, prompt: prompt, startedAt: Date()))
         #if os(iOS)
-        liveActivity.start(runID: id, prompt: prompt, phase: "Ich denke nach")
+        liveActivity.start(runID: id, prompt: prompt, phase: "Ich denke nach",
+                           background: backgroundChoice.rawValue)
         #endif
     }
 
@@ -464,7 +465,10 @@ final class AppModel: ObservableObject {
     private var hotkeyObserver: AnyCancellable?
     #endif
     @Published private(set) var voiceListError: String?
-    @Published var selectedBridgeVoice: String = "" {
+    /// Restored from disk, not defaulted. Nothing read this back, so every
+    /// launch started at "Wie am Mac eingestellt" no matter what was chosen.
+    @Published var selectedBridgeVoice: String =
+        UserDefaults.standard.string(forKey: "selectedBridgeVoice") ?? "" {
         didSet { UserDefaults.standard.set(selectedBridgeVoice, forKey: "selectedBridgeVoice") }
     }
 
@@ -548,8 +552,11 @@ final class AppModel: ObservableObject {
             voiceListError = availableBridgeVoices.isEmpty
                 ? "Keine Stimmen verfügbar. Läuft Piper auf dem Mac?"
                 : nil
-            // A voice removed on the Mac must not stay selected here.
-            if !selectedBridgeVoice.isEmpty,
+            // A voice removed on the Mac must not stay selected here — but an
+            // empty list means the Mac could not tell us, not that every voice
+            // is gone. Clearing on that is how a choice disappeared after a
+            // launch where the bridge answered late or the provider was down.
+            if !selectedBridgeVoice.isEmpty, !availableBridgeVoices.isEmpty,
                !availableBridgeVoices.contains(where: { $0.id == selectedBridgeVoice }) {
                 selectedBridgeVoice = ""
             }
@@ -572,10 +579,20 @@ final class AppModel: ObservableObject {
     private var watchConnectivityController: WatchConnectivityController?
 #endif
 
+    /// Marks the one-time cleanup below as done. Without it that cleanup ran
+    /// on every launch, which is why a chosen voice never survived quitting
+    /// the app: it was not being forgotten by accident, it was being deleted
+    /// on purpose, forever.
+    private static let voiceMigrationKey = "didDropLegacyProviderVoice"
+
     init() {
-        // The app no longer sends provider voice IDs. Forget a previously
-        // selected ElevenLabs voice so an offline launch cannot reuse it.
-        UserDefaults.standard.removeObject(forKey: "selectedBridgeVoice")
+        // The app no longer sends provider voice IDs, so a previously selected
+        // ElevenLabs voice has to go — once. A migration that repeats is not a
+        // migration, it is a reset.
+        if !UserDefaults.standard.bool(forKey: Self.voiceMigrationKey) {
+            UserDefaults.standard.removeObject(forKey: "selectedBridgeVoice")
+            UserDefaults.standard.set(true, forKey: Self.voiceMigrationKey)
+        }
         let storedURL = UserDefaults.standard.string(forKey: "serverURL")
         if Self.shouldMigrateServerURL(storedURL) {
             serverURL = Self.defaultServerURL
