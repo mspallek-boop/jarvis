@@ -197,9 +197,12 @@ struct ContentView: View {
     }
 
     private var activitySummary: String {
-        guard model.runs.count > 1 else { return model.activityLabel }
-        let foreground = model.runs.first?.phaseLabel ?? model.activityLabel
-        return "Ich " + foreground + " · +" + String(model.runs.count - 1)
+        // `runs` is a polling snapshot from the bridge. It can be empty or
+        // stale for up to one poll while this view already owns several live
+        // requests, so it must not decide whether multitasking is visible.
+        let count = model.localRuns.count
+        guard count > 1 else { return model.activityLabel }
+        return "Ich " + model.activityLabel + " · +" + String(count - 1)
     }
 
     @ViewBuilder
@@ -234,35 +237,41 @@ struct ContentView: View {
         .padding(.vertical, 18)
     }
 
-    /// One blob per running task — all of them, including the one in focus.
+    /// The other running tasks. The focused task is already the large orb, so
+    /// it is deliberately not repeated in this row. With the bridge's four
+    /// parallel lanes that leaves at most three visible blobs.
     ///
-    /// While several things run, the work *is* several things, and showing one
-    /// as a big orb and the rest as satellites misrepresents that. The focused
-    /// one is simply brighter and larger; tapping another centres it. A blob is
-    /// one tile, not a grid: a grid says "a JARVIS", and there is one of those.
+    /// A client can still have more *queued* requests than those lanes. Keep
+    /// the row horizontally scrollable for that case: an `HStack` with an
+    /// unbounded number of fixed-size buttons eventually overflows its parent
+    /// and SwiftUI may drop the entire row during its animated relayout.
     private var taskBlobs: some View {
-        HStack(spacing: 14) {
-            ForEach(model.localRuns) { run in
-                let focused = run.id == model.focusedRunID
-                Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
-                    TaskBlobView(size: focused ? 34 : 26, color: ink, seed: run.id.hashValue)
-                        .opacity(focused ? 1 : 0.5)
-                        // Small on purpose, but never small to hit.
-                        .frame(width: 48, height: 48)
-                        .contentShape(Rectangle())
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                ForEach(model.localRuns.filter { $0.id != model.focusedRunID }) { run in
+                    Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
+                        TaskBlobView(size: 30, color: ink, seed: run.id.hashValue)
+                            .opacity(0.55)
+                            // Small on purpose, but never small to hit.
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    #if os(macOS)
+                    .focusable(false)
+                    #endif
+                    .accessibilityLabel("Aufgabe anzeigen: \(run.prompt.prefix(60))")
+                    .help(String(run.prompt.prefix(80)))
+                    .transition(.scale.combined(with: .opacity))
                 }
-                .buttonStyle(.plain)
-                #if os(macOS)
-                .focusable(false)
-                #endif
-                .accessibilityLabel("Aufgabe anzeigen: \(run.prompt.prefix(60))")
-                .help(String(run.prompt.prefix(80)))
-                .transition(.scale.combined(with: .opacity))
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 12)
         }
-        .frame(height: model.localRuns.count > 1 ? 48 : 0)
+        .frame(height: model.localRuns.count > 1 ? 44 : 0)
         .opacity(model.localRuns.count > 1 ? 1 : 0)
         .allowsHitTesting(model.localRuns.count > 1)
+        .layoutPriority(1)
         .animation(.easeInOut(duration: 0.25), value: model.localRuns.count)
     }
 
