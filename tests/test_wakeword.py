@@ -58,3 +58,59 @@ def test_the_url_says_exactly_one_thing():
     assert "jarvis://wake" in source
     # Every mention, comments included, is the same one thing.
     assert source.count("jarvis://") == source.count("jarvis://wake")
+
+
+# ------------------------------------------------------------------ off switch
+
+def test_the_switch_off_releases_the_microphone(tmp_path, monkeypatch):
+    """Off has to mean the input stream closes, not merely that hits are ignored.
+
+    An open stream is enough to duck the Mac's own audio, which is what the
+    user actually noticed: JARVIS listening all day and them hearing nothing.
+    """
+    module = load()
+    flag = tmp_path / "wakeword-off"
+    monkeypatch.setattr(module, "OFF_FLAG", str(flag))
+    monkeypatch.setattr(module, "app_is_running", lambda: True)
+
+    assert module.should_listen() is True
+    flag.write_text("aus\n")
+    assert module.should_listen() is False
+    flag.unlink()
+    assert module.should_listen() is True
+
+
+def test_no_flag_file_means_listening(tmp_path, monkeypatch):
+    """An install that predates the switch must behave exactly as it did."""
+    module = load()
+    monkeypatch.setattr(module, "OFF_FLAG", str(tmp_path / "never-written"))
+    monkeypatch.setattr(module, "app_is_running", lambda: True)
+    assert module.wake_word_disabled() is False
+    assert module.should_listen() is True
+
+
+def test_a_closed_app_still_releases_the_microphone(tmp_path, monkeypatch):
+    """The two reasons to let go are independent; either one is enough."""
+    module = load()
+    monkeypatch.setattr(module, "OFF_FLAG", str(tmp_path / "absent"))
+    monkeypatch.setattr(module, "app_is_running", lambda: False)
+    assert module.should_listen() is False
+
+
+def test_the_settings_toggle_and_the_service_agree_on_the_file():
+    """Two processes, one path. A mismatch would make the toggle do nothing."""
+    service = (ROOT / "scripts" / "jarvis-wakeword.py").read_text()
+    switch = (ROOT / "apple" / "Sources" / "Services" / "WakeWordSwitch.swift").read_text()
+    assert '"~/.hermes/wakeword-off"' in service
+    assert '".hermes/wakeword-off"' in switch
+    # Presence means off on both sides.
+    assert "return os.path.exists(OFF_FLAG)" in service
+    assert "!FileManager.default.fileExists(atPath: flagURL.path)" in switch
+
+
+def test_the_settings_screen_offers_the_switch():
+    settings = (ROOT / "apple" / "Sources" / "Views" / "SettingsView.swift").read_text()
+    assert "isOn: $model.wakeWordEnabled" in settings
+    # Promising a switch for a service that is not installed is worse than
+    # not offering one.
+    assert "model.wakeWordAvailable" in settings

@@ -258,6 +258,21 @@ final class AppModel: ObservableObject {
         chatTasks[id] = nil
         if focusedRunID == id { focusedRunID = localRuns.first?.id }
     }
+    #if os(macOS)
+    /// Always-on „Hey JARVIS". Off means the detector releases the microphone
+    /// entirely — the point of the switch is not the wake word but the open
+    /// input stream behind it, which was ducking everything else the Mac
+    /// wanted to play.
+    @Published var wakeWordEnabled: Bool = WakeWordSwitch.isEnabled {
+        didSet {
+            guard oldValue != wakeWordEnabled else { return }
+            if !WakeWordSwitch.setEnabled(wakeWordEnabled) {
+                lastError = "Das Weckwort ließ sich nicht umstellen."
+            }
+        }
+    }
+    var wakeWordAvailable: Bool { WakeWordSwitch.isAvailable }
+    #endif
     @Published var connection: ConnectionState = .unchecked
     @Published var showingSettings = false
     @Published var serverURL: String

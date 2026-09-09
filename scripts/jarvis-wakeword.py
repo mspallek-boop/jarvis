@@ -40,10 +40,31 @@ COOLDOWN_SECONDS = float(os.environ.get("JARVIS_WAKE_COOLDOWN", "8"))
 SAMPLE_RATE = 16000
 BLOCK = 1280
 APP_BINARY = "/Applications/JARVIS.app/Contents/MacOS/JARVIS"
+# The off switch, written by the JARVIS settings toggle. Presence means off;
+# absence means listening, so an install that predates the switch is unchanged.
+# A file rather than a port or a socket, to match the one-way `jarvis://wake`
+# URL going the other way: neither side can say anything but this one thing.
+OFF_FLAG = os.path.expanduser(
+    os.environ.get("JARVIS_WAKE_OFF_FLAG", "~/.hermes/wakeword-off"))
 # How often to look for the app while it is not running. Long enough that the
 # check costs nothing, short enough that starting JARVIS makes the wake word
 # work without thinking about it.
 IDLE_POLL_SECONDS = 5.0
+
+
+def wake_word_disabled() -> bool:
+    return os.path.exists(OFF_FLAG)
+
+
+def should_listen() -> bool:
+    """Both reasons to hold the microphone, and the only two there are.
+
+    Turning the wake word off has to release the input stream, not merely stop
+    acting on it: an open stream is enough to duck the Mac's own audio, which
+    is what the user actually noticed — JARVIS listening and them hearing
+    nothing.
+    """
+    return app_is_running() and not wake_word_disabled()
 
 
 def app_is_running() -> bool:
@@ -97,15 +118,16 @@ def run() -> int:
     print(f"Weckwort aktiv: {MODEL} (Schwelle {trigger.threshold})", flush=True)
 
     while True:
-        if not app_is_running():
-            # Nothing to wake, so nothing to listen to — and no recording dot.
+        if not should_listen():
+            # Nothing to wake, or nothing wanted — either way no open stream,
+            # no recording dot, and nothing ducking the Mac's audio.
             time.sleep(IDLE_POLL_SECONDS)
             continue
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
                                 blocksize=BLOCK) as stream:
                 print("Mikrofon offen, JARVIS läuft.", flush=True)
-                while app_is_running():
+                while should_listen():
                     frame, overflowed = stream.read(BLOCK)
                     if overflowed:
                         continue
@@ -117,7 +139,8 @@ def run() -> int:
                         # Drop what was buffered during the utterance so the tail
                         # of it cannot score again on the next read.
                         model.reset()
-                print("JARVIS ist weg, Mikrofon wieder frei.", flush=True)
+                print("Weckwort aus." if wake_word_disabled() else "JARVIS ist weg.",
+                      "Mikrofon wieder frei.", flush=True)
         except Exception as error:            # sounddevice raises a lot of shapes
             print(f"Audio-Fehler: {error}", file=sys.stderr, flush=True)
             time.sleep(IDLE_POLL_SECONDS)
@@ -131,6 +154,7 @@ def selftest() -> int:
     device = sd.query_devices(kind="input")
     print("Eingabegerät:", device["name"])
     print("JARVIS läuft:", app_is_running())
+    print("Weckwort eingeschaltet:", not wake_word_disabled())
     return 0
 
 

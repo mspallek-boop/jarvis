@@ -103,6 +103,14 @@ struct SettingsView: View {
                     Text("Halten und sprechen, loslassen sendet. Zweimal kurz tippen lässt das Mikrofon offen, bis du wieder doppelt tippst. Modifier-Tasten tippen nichts, sind also auch in einem Textfeld gefahrlos zu halten.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Divider()
+                    Toggle("„Hey JARVIS“ hört immer mit", isOn: $model.wakeWordEnabled)
+                        .disabled(!model.wakeWordAvailable)
+                    Text(model.wakeWordAvailable
+                         ? "Aus bedeutet, dass der Weckwort-Dienst das Mikrofon ganz loslässt: kein orangener Punkt und nichts, was den Ton des Macs leiser macht. JARVIS bleibt über das Tastenkürzel und das Fenster erreichbar."
+                         : "Der Weckwort-Dienst ist auf diesem Mac nicht eingerichtet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     if model.hotkey.enabled && !model.hotkey.permissionGranted {
                         // A global monitor silently receives nothing without
                         // this, so the feature would look broken rather than

@@ -13,11 +13,13 @@
 		06CFBD9DD5C96B18FE88CB17 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8206E546BD2F8F0E8797941F /* SettingsView.swift */; };
 		0790C7CD0AF427A049AC3AA5 /* WatchSentenceQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3972C8A3F4FBCA11D5048C90 /* WatchSentenceQueue.swift */; };
 		07D76716609204D812F70B0F /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF0DEE643BA0F757FA42DF3 /* ChatMessage.swift */; };
+		0A632142FF8B0B7284F4E8CA /* WakeWordSwitch.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC880E1CA3FFDBB34EBBE451 /* WakeWordSwitch.swift */; };
 		1591F0AD65F37247B9332E22 /* OrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A73486912EC61CA5F0C62FC /* OrbView.swift */; };
 		19279D855B5D0B101B8DB021 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F776CA036509B4A79D643F8 /* AppDelegate.swift */; };
 		1AE82F173BFE73A5CEE58B4B /* JARVISWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1F9AB9838BE692642BF230 /* JARVISWatchApp.swift */; };
 		1C3BAFE1B22EA3057B23E2F9 /* SpeechPlaybackSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5B354C95444494ABFDFB10 /* SpeechPlaybackSpeed.swift */; };
 		1D787D48377569251F718F58 /* JARVISApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D05682135E2985D3FA0889 /* JARVISApp.swift */; };
+		2BF14E7C6DF67AE684AAF88A /* WakeWordSwitch.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC880E1CA3FFDBB34EBBE451 /* WakeWordSwitch.swift */; };
 		2D816FEBF00C3EE0A29A9F5B /* JarvisAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4B478F7CCE24096F5CC9D2 /* JarvisAPIClient.swift */; };
 		2DD35E66EFA13352EB4F13C2 /* BargeInDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2D87C90A40B984B28E298A /* BargeInDetector.swift */; };
 		2EE033FCAC1A439AF0FD87D4 /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */; };
@@ -161,6 +163,7 @@
 		964CBE0FECBFFAD0ACA4A829 /* OverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayView.swift; sourceTree = "<group>"; };
 		993551E4C1EEEE9BF69F8A7A /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		A34562E24B9A74B4ECC1D169 /* JARVIS-Watch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "JARVIS-Watch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AC880E1CA3FFDBB34EBBE451 /* WakeWordSwitch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordSwitch.swift; sourceTree = "<group>"; };
 		BE492CB729A0699B12816187 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		CE62E25BBD9B0943F8A64784 /* SpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechController.swift; sourceTree = "<group>"; };
 		D4FCF8B7B162F4F758D95791 /* RoundComplicationGlyph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundComplicationGlyph.swift; sourceTree = "<group>"; };
@@ -302,6 +305,7 @@
 				DD5B354C95444494ABFDFB10 /* SpeechPlaybackSpeed.swift */,
 				0564777068B4669CA9ABD265 /* SpeechSentenceBuffer.swift */,
 				070AC2894379A270DCF07D2F /* SpeechText.swift */,
+				AC880E1CA3FFDBB34EBBE451 /* WakeWordSwitch.swift */,
 				06F2A17C7E7C119F8C6A7AD0 /* WatchConnectivityController.swift */,
 				35C493622F33AFDD8211D93B /* WindowTransition.swift */,
 			);
@@ -540,6 +544,7 @@
 				1C3BAFE1B22EA3057B23E2F9 /* SpeechPlaybackSpeed.swift in Sources */,
 				78CB1391056C2011475FE8C3 /* SpeechSentenceBuffer.swift in Sources */,
 				73F97758AB6743015246E330 /* SpeechText.swift in Sources */,
+				0A632142FF8B0B7284F4E8CA /* WakeWordSwitch.swift in Sources */,
 				9EEC9014E356974981495B4B /* WatchConnectivityController.swift in Sources */,
 				03A02E4F4F1105974E8C6D51 /* WindowTransition.swift in Sources */,
 			);
@@ -573,6 +578,7 @@
 				E5E08D1995B23AEF6F4232CC /* SpeechPlaybackSpeed.swift in Sources */,
 				B7AEE0BDBEC0FD92935AF537 /* SpeechSentenceBuffer.swift in Sources */,
 				9B7A2258AD7AAE9C1026F84F /* SpeechText.swift in Sources */,
+				2BF14E7C6DF67AE684AAF88A /* WakeWordSwitch.swift in Sources */,
 				435492745CC215DE90387A3D /* WatchConnectivityController.swift in Sources */,
 				B8FA3099DBC58157F957D1DD /* WindowTransition.swift in Sources */,
 			);
