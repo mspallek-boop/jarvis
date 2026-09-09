@@ -1,6 +1,7 @@
 #if os(iOS)
 import ActivityKit
 import Foundation
+import SwiftUI
 
 /// What a running JARVIS turn looks like from outside the app.
 ///
@@ -14,6 +15,11 @@ import Foundation
 struct JarvisActivityAttributes: ActivityAttributes {
     /// The question. Fixed for the life of the activity.
     let prompt: String
+    /// `AppBackground.rawValue`, so the lock screen wears the same colour the
+    /// app does. The extension is a separate process and cannot read the app's
+    /// defaults, so the choice travels with the activity. It is an attribute
+    /// rather than state because nobody changes their theme mid-answer.
+    var background: String = "black"
 
     struct ContentState: Codable, Hashable {
         /// What JARVIS is doing right now, already in the app's wording —
@@ -35,6 +41,39 @@ struct JarvisActivityAttributes: ActivityAttributes {
             guard trimmed.count > 240 else { return trimmed }
             return "…" + trimmed.suffix(240)
         }
+    }
+}
+
+/// The app's background palette, as the extension needs it.
+///
+/// It deliberately mirrors `AppBackground` rather than sharing it: that enum
+/// lives in the app's model layer with everything else the extension has no
+/// business linking against. A test keeps the two lists in step.
+enum ActivityPalette {
+    static func background(_ raw: String) -> Color {
+        switch raw {
+        case "white": return .white
+        case "blue": return .blue
+        case "green": return .green
+        case "orange": return .orange
+        case "red": return .red
+        case "purple": return .purple
+        default: return .black
+        }
+    }
+
+    /// Black text on the light grounds, white on the dark ones — the same
+    /// pairing the app uses, so the lock screen is legible in both.
+    static func foreground(_ raw: String) -> Color {
+        switch raw {
+        case "white", "green", "orange": return .black
+        default: return .white
+        }
+    }
+
+    /// A tone for the phase line and the prompt: the foreground, stepped back.
+    static func secondary(_ raw: String) -> Color {
+        foreground(raw).opacity(0.65)
     }
 }
 #endif

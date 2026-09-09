@@ -31,11 +31,14 @@ private struct GridGlyph: View {
 private struct StatusGlyph: View {
     let finished: Bool
     let failed: Bool
+    /// Nil on the Dynamic Island, which is always black and takes the system
+    /// accent; set on the lock screen, where the app's own colour is the ground.
+    var tint: Color?
     @State private var breathing = false
 
     var body: some View {
         GridGlyph()
-            .foregroundStyle(failed ? Color.orange : (finished ? Color.secondary : Color.accentColor))
+            .foregroundStyle(failed ? Color.orange : (tint ?? (finished ? Color.secondary : Color.accentColor)))
             .frame(width: 22, height: 22)
             .opacity(finished || failed ? 1 : (breathing ? 1 : 0.45))
             .animation(finished || failed ? nil
@@ -49,11 +52,12 @@ private struct StatusGlyph: View {
 /// reason while it is broken, and nothing self-congratulatory when it is done.
 private struct PhaseLine: View {
     let state: JarvisActivityAttributes.ContentState
+    var tint: Color?
 
     var body: some View {
         Text(state.failure ?? (state.isFinished ? "Fertig" : state.phase))
             .font(.caption)
-            .foregroundStyle(state.failure == nil ? .secondary : Color.orange)
+            .foregroundStyle(state.failure == nil ? (tint ?? Color.secondary) : Color.orange)
             .lineLimit(1)
     }
 }
@@ -62,32 +66,41 @@ private struct PhaseLine: View {
 private struct LockScreenView: View {
     let context: ActivityViewContext<JarvisActivityAttributes>
 
+    private var ground: Color { ActivityPalette.background(context.attributes.background) }
+    private var ink: Color { ActivityPalette.foreground(context.attributes.background) }
+    private var quiet: Color { ActivityPalette.secondary(context.attributes.background) }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            StatusGlyph(finished: context.state.isFinished, failed: context.state.failure != nil)
+            StatusGlyph(finished: context.state.isFinished,
+                        failed: context.state.failure != nil, tint: ink)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 4) {
                 Text(context.attributes.prompt)
                     .font(.footnote.weight(.medium))
                     .lineLimit(1)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(quiet)
                 // The answer is the reason to look at the screen, so it gets
                 // the size — until there is one, the phase stands in for it.
                 if context.state.replyExcerpt.isEmpty {
-                    PhaseLine(state: context.state)
+                    PhaseLine(state: context.state, tint: ink)
                         .font(.callout)
                 } else {
                     Text(context.state.replyExcerpt)
                         .font(.callout)
+                        .foregroundStyle(ink)
                         .lineLimit(4)
-                    PhaseLine(state: context.state)
+                    PhaseLine(state: context.state, tint: quiet)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(16)
-        .activityBackgroundTint(Color.black.opacity(0.35))
-        .activitySystemActionForegroundColor(.primary)
+        // The lock screen wears the colour the user chose in the app, so the
+        // two read as one thing. The Dynamic Island deliberately does not:
+        // it is a hole in the display, and a coloured one looks like a bug.
+        .activityBackgroundTint(ground)
+        .activitySystemActionForegroundColor(ink)
     }
 }
 

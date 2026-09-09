@@ -30,9 +30,9 @@ final class LiveActivityController {
     }
 
     /// Puts a freshly started turn on the lock screen.
-    func start(runID: String, prompt: String, phase: String) {
+    func start(runID: String, prompt: String, phase: String, background: String) {
         guard enabled, activities[runID] == nil else { return }
-        let attributes = JarvisActivityAttributes(prompt: prompt)
+        let attributes = JarvisActivityAttributes(prompt: prompt, background: background)
         let state = JarvisActivityAttributes.ContentState(
             phase: phase, reply: "", isFinished: false, failure: nil)
         do {
