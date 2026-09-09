@@ -21,6 +21,7 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Shared
       - Resources/iOS
     info:
       path: Config/JARVIS-iOS-Info.plist
@@ -34,6 +35,7 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UILaunchScreen: {}
+        NSSupportsLiveActivities: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
     settings:
@@ -48,6 +50,32 @@ targets:
     dependencies:
       - target: JARVIS-Watch
         embed: true
+      - target: JARVIS-LiveActivity
+        embed: true
+  JARVIS-LiveActivity:
+    # WidgetKit extension. A Live Activity can only be drawn by an extension,
+    # never by the app itself — which is exactly why it keeps showing the turn
+    # after iOS has suspended the app for a dark screen.
+    type: app-extension
+    platform: iOS
+    sources:
+      - LiveActivity
+      - Shared
+    info:
+      path: Config/JARVIS-LiveActivity-Info.plist
+      properties:
+        CFBundleDisplayName: JARVIS
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: at.marlon.jarvis.ios.liveactivity
+        PRODUCT_NAME: $(TARGET_NAME)
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: V86U93FGU3
+        SKIP_INSTALL: YES
   JARVIS-macOS:
     type: application
     platform: macOS

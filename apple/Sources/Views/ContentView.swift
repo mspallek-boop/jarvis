@@ -151,7 +151,13 @@ struct ContentView: View {
             if scenePhase == .background {
                 Task { await model.setVoiceForeground(false) }
             } else if scenePhase == .active {
-                Task { await model.setVoiceForeground(!isPresentingSheet) }
+                Task {
+                    await model.setVoiceForeground(!isPresentingSheet)
+                    // Coming back from a dark screen is a return, not a launch,
+                    // so the view's `task` does not run again. Without this the
+                    // offline banner the suspension produced stayed up forever.
+                    await model.resumeFromBackground()
+                }
             }
         }
         .onChange(of: isPresentingSheet) {

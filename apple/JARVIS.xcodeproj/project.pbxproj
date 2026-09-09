@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		03A02E4F4F1105974E8C6D51 /* WindowTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35C493622F33AFDD8211D93B /* WindowTransition.swift */; };
 		040AB5BC5CB920F10FA1E996 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE62E25BBD9B0943F8A64784 /* SpeechController.swift */; };
+		0487F884385B4958EB538884 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 993551E4C1EEEE9BF69F8A7A /* LiveActivityController.swift */; };
 		06CFBD9DD5C96B18FE88CB17 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8206E546BD2F8F0E8797941F /* SettingsView.swift */; };
 		0790C7CD0AF427A049AC3AA5 /* WatchSentenceQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3972C8A3F4FBCA11D5048C90 /* WatchSentenceQueue.swift */; };
 		07D76716609204D812F70B0F /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF0DEE643BA0F757FA42DF3 /* ChatMessage.swift */; };
@@ -27,6 +28,7 @@
 		5581FC4937F792D32EEAB71C /* OverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964CBE0FECBFFAD0ACA4A829 /* OverlayView.swift */; };
 		57A313B76F8DE97A94467A10 /* RoundComplicationGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FCF8B7B162F4F758D95791 /* RoundComplicationGlyph.swift */; };
 		5E2C18E5CE0C884733155E53 /* JARVISApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D05682135E2985D3FA0889 /* JARVISApp.swift */; };
+		62E28B6D8BEE83300D057261 /* JarvisActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 379EF5C36A28426C1EA6C3E5 /* JarvisActivityAttributes.swift */; };
 		64A65BCCA97B4DDC052F0EE3 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = F55E64DE1A6B6D0A39EF53CA /* MessageBubble.swift */; };
 		692959D2FF5F9C4B21E73858 /* OrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A73486912EC61CA5F0C62FC /* OrbView.swift */; };
 		6CC2EB91DD0B2CBB5A16C980 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE62E25BBD9B0943F8A64784 /* SpeechController.swift */; };
@@ -38,6 +40,7 @@
 		779B2B619F78E8117EE411FE /* PlatformImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134C14076E8AB28BC8CF0FF9 /* PlatformImage.swift */; };
 		78CB1391056C2011475FE8C3 /* SpeechSentenceBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0564777068B4669CA9ABD265 /* SpeechSentenceBuffer.swift */; };
 		7A1D0804C9AC2E68FAAC62C4 /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D123734AAB0C4E22872BA3C /* FilesView.swift */; };
+		7C326EC7459FAD89E2E88455 /* JarvisActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 379EF5C36A28426C1EA6C3E5 /* JarvisActivityAttributes.swift */; };
 		809A2A7CD4E871FD4B296266 /* OrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A73486912EC61CA5F0C62FC /* OrbView.swift */; };
 		8B392D515A810B65F04DB2E0 /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D123734AAB0C4E22872BA3C /* FilesView.swift */; };
 		92069100A715B41F1E24F876 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = F29FEF1AB09C4AA29F1E63D4 /* AppIcon.png */; };
@@ -55,6 +58,8 @@
 		C2395688309B36A323CE349D /* JARVISComplication.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDF587F5D8E266248A965D5C /* JARVISComplication.swift */; };
 		C38F5A8E319460D3054C2068 /* BargeInDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E2D87C90A40B984B28E298A /* BargeInDetector.swift */; };
 		C6318C4316D49FF3E9D41D58 /* JARVIS-Watch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A34562E24B9A74B4ECC1D169 /* JARVIS-Watch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		CEC48B3ADCF3E2CB4CDBFD2D /* JARVIS-LiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F4B0785ADA0FDB872133DCC2 /* JARVIS-LiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		CF23ACD2E764D58A7A764047 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 993551E4C1EEEE9BF69F8A7A /* LiveActivityController.swift */; };
 		D1C06FF446D41CF8C87A7B2D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0149145E6855F93FB72D9A6 /* ContentView.swift */; };
 		D3410CEB5F0AA7E3278C7024 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = BE492CB729A0699B12816187 /* AppIcon.icon */; };
 		D9919ABEEC8ECAED33AFFBD0 /* OverlayPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EEF5442FF82CFF5DFCD452 /* OverlayPanel.swift */; };
@@ -65,11 +70,19 @@
 		E7147F3B95EDA4FBF14AE022 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8CFEA8899317EA95524D37CD /* Assets.xcassets */; };
 		E7991059FF5BD9384A52DC41 /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */; };
 		ED66C5220A55C7AA879E0204 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DF0DEE643BA0F757FA42DF3 /* ChatMessage.swift */; };
+		F45504B27BF2B9E752A626CF /* JarvisLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08A4282CE2282EC3C0A2E83 /* JarvisLiveActivity.swift */; };
 		F68B8DF458E92CB320511162 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0149145E6855F93FB72D9A6 /* ContentView.swift */; };
 		F981E8B40EC2E6CAAC981D35 /* AnswerText.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACD27D506C4574D9AF997B9 /* AnswerText.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		78D18E8DD66D859DB7E8B46D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = ADD63BE4B2357052078A3C83 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0C6013D999189D6E03F0D4CE;
+			remoteInfo = "JARVIS-LiveActivity";
+		};
 		927609A228EC0737C62CD54D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = ADD63BE4B2357052078A3C83 /* Project object */;
@@ -109,6 +122,17 @@
 			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FEAD27F26F30C0F0D0FEB619 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				CEC48B3ADCF3E2CB4CDBFD2D /* JARVIS-LiveActivity.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -121,6 +145,7 @@
 		1914BCE6BAADFBF806B0F8AE /* JARVIS-WatchComplication.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "JARVIS-WatchComplication.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1E2D87C90A40B984B28E298A /* BargeInDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BargeInDetector.swift; sourceTree = "<group>"; };
 		35C493622F33AFDD8211D93B /* WindowTransition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowTransition.swift; sourceTree = "<group>"; };
+		379EF5C36A28426C1EA6C3E5 /* JarvisActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisActivityAttributes.swift; sourceTree = "<group>"; };
 		3972C8A3F4FBCA11D5048C90 /* WatchSentenceQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSentenceQueue.swift; sourceTree = "<group>"; };
 		3C61A26469A6D7CB69AE55CC /* JARVIS-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "JARVIS-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		4184D57F559C022E1A0B6242 /* WatchConnectivityClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchConnectivityClient.swift; sourceTree = "<group>"; };
@@ -134,6 +159,7 @@
 		88D05682135E2985D3FA0889 /* JARVISApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JARVISApp.swift; sourceTree = "<group>"; };
 		8CFEA8899317EA95524D37CD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		964CBE0FECBFFAD0ACA4A829 /* OverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayView.swift; sourceTree = "<group>"; };
+		993551E4C1EEEE9BF69F8A7A /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		A34562E24B9A74B4ECC1D169 /* JARVIS-Watch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "JARVIS-Watch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BE492CB729A0699B12816187 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		CE62E25BBD9B0943F8A64784 /* SpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechController.swift; sourceTree = "<group>"; };
@@ -142,7 +168,9 @@
 		DD5B354C95444494ABFDFB10 /* SpeechPlaybackSpeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechPlaybackSpeed.swift; sourceTree = "<group>"; };
 		E78AFC01342E09D6260979F6 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		F0149145E6855F93FB72D9A6 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		F08A4282CE2282EC3C0A2E83 /* JarvisLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisLiveActivity.swift; sourceTree = "<group>"; };
 		F29FEF1AB09C4AA29F1E63D4 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
+		F4B0785ADA0FDB872133DCC2 /* JARVIS-LiveActivity.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = "JARVIS-LiveActivity.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F55E64DE1A6B6D0A39EF53CA /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
 		F6B72D9D3A012E4BB87C579C /* NeuralSpeechPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralSpeechPlayer.swift; sourceTree = "<group>"; };
 		FA4B478F7CCE24096F5CC9D2 /* JarvisAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisAPIClient.swift; sourceTree = "<group>"; };
@@ -197,10 +225,19 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
+		7317CEDDFB241C6563B18F9B /* LiveActivity */ = {
+			isa = PBXGroup;
+			children = (
+				F08A4282CE2282EC3C0A2E83 /* JarvisLiveActivity.swift */,
+			);
+			path = LiveActivity;
+			sourceTree = "<group>";
+		};
 		75594F8B2D179BDC1BED9E1C /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				733D9043B84F4189261B1AA8 /* JARVIS-iOS.app */,
+				F4B0785ADA0FDB872133DCC2 /* JARVIS-LiveActivity.appex */,
 				3C61A26469A6D7CB69AE55CC /* JARVIS-macOS.app */,
 				A34562E24B9A74B4ECC1D169 /* JARVIS-Watch.app */,
 				1914BCE6BAADFBF806B0F8AE /* JARVIS-WatchComplication.appex */,
@@ -229,8 +266,10 @@
 			isa = PBXGroup;
 			children = (
 				1824801564EB333A8C02EF2F /* iOS */,
+				7317CEDDFB241C6563B18F9B /* LiveActivity */,
 				F25F2C04E61D6CAB98557A11 /* macOS */,
 				C5F8DD77E980B2D0B939BD53 /* Raw */,
+				BC6B1C335971681FC35C4B42 /* Shared */,
 				218121C2E627D70F785552EF /* Sources */,
 				0F30FAB36682CB7472ABCBD2 /* WatchApp */,
 				8EB2D7719479960E1E0E2D59 /* WatchComplication */,
@@ -255,6 +294,7 @@
 				4EB48960125091AE5A6D559B /* HotkeyMonitor.swift */,
 				FA4B478F7CCE24096F5CC9D2 /* JarvisAPIClient.swift */,
 				E78AFC01342E09D6260979F6 /* KeychainStore.swift */,
+				993551E4C1EEEE9BF69F8A7A /* LiveActivityController.swift */,
 				F6B72D9D3A012E4BB87C579C /* NeuralSpeechPlayer.swift */,
 				10EEF5442FF82CFF5DFCD452 /* OverlayPanel.swift */,
 				134C14076E8AB28BC8CF0FF9 /* PlatformImage.swift */,
@@ -266,6 +306,14 @@
 				35C493622F33AFDD8211D93B /* WindowTransition.swift */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		BC6B1C335971681FC35C4B42 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				379EF5C36A28426C1EA6C3E5 /* JarvisActivityAttributes.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 		C5F8DD77E980B2D0B939BD53 /* Raw */ = {
@@ -289,6 +337,23 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		0C6013D999189D6E03F0D4CE /* JARVIS-LiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F52FF6340D1F0FD74DAEFCE6 /* Build configuration list for PBXNativeTarget "JARVIS-LiveActivity" */;
+			buildPhases = (
+				B99F93D0907095D67FE51F9E /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "JARVIS-LiveActivity";
+			packageProductDependencies = (
+			);
+			productName = "JARVIS-LiveActivity";
+			productReference = F4B0785ADA0FDB872133DCC2 /* JARVIS-LiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		646F447B7593248BEEC1606E /* JARVIS-Watch */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4D0DF3016B7DE842B5B27A55 /* Build configuration list for PBXNativeTarget "JARVIS-Watch" */;
@@ -350,12 +415,14 @@
 			buildPhases = (
 				5A05289C0A3F2E19468920B1 /* Sources */,
 				589ABA196879618903F050A7 /* Resources */,
+				FEAD27F26F30C0F0D0FEB619 /* Embed Foundation Extensions */,
 				9BD1DE71D4CB411AD0512CA5 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				5C026AC4745FB1F3EBBD961C /* PBXTargetDependency */,
+				ED2E76324324789427BCF83A /* PBXTargetDependency */,
 			);
 			name = "JARVIS-iOS";
 			packageProductDependencies = (
@@ -373,6 +440,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					0C6013D999189D6E03F0D4CE = {
+						DevelopmentTeam = V86U93FGU3;
+						ProvisioningStyle = Automatic;
+					};
 					646F447B7593248BEEC1606E = {
 						DevelopmentTeam = V86U93FGU3;
 						ProvisioningStyle = Automatic;
@@ -406,6 +477,7 @@
 			projectRoot = "";
 			targets = (
 				CD592B365E7235F6B1168360 /* JARVIS-iOS */,
+				0C6013D999189D6E03F0D4CE /* JARVIS-LiveActivity */,
 				BA7E160CC447837FA8A0EFF7 /* JARVIS-macOS */,
 				646F447B7593248BEEC1606E /* JARVIS-Watch */,
 				8516DF00CE354F8E8BF1A4BD /* JARVIS-WatchComplication */,
@@ -456,6 +528,7 @@
 				5E2C18E5CE0C884733155E53 /* JARVISApp.swift in Sources */,
 				72BAFBC7DC8F4372F5C20F7B /* JarvisAPIClient.swift in Sources */,
 				AE3BD61E108CEEAA81C0075C /* KeychainStore.swift in Sources */,
+				CF23ACD2E764D58A7A764047 /* LiveActivityController.swift in Sources */,
 				E573F2C669C566BFBD58C101 /* MessageBubble.swift in Sources */,
 				7704BD054AB4013063D2F835 /* NeuralSpeechPlayer.swift in Sources */,
 				1591F0AD65F37247B9332E22 /* OrbView.swift in Sources */,
@@ -486,7 +559,9 @@
 				E7991059FF5BD9384A52DC41 /* HotkeyMonitor.swift in Sources */,
 				1D787D48377569251F718F58 /* JARVISApp.swift in Sources */,
 				2D816FEBF00C3EE0A29A9F5B /* JarvisAPIClient.swift in Sources */,
+				62E28B6D8BEE83300D057261 /* JarvisActivityAttributes.swift in Sources */,
 				9E484C664AD21E821AAE038E /* KeychainStore.swift in Sources */,
+				0487F884385B4958EB538884 /* LiveActivityController.swift in Sources */,
 				64A65BCCA97B4DDC052F0EE3 /* MessageBubble.swift in Sources */,
 				A8C96CC48BEEDFB98901A879 /* NeuralSpeechPlayer.swift in Sources */,
 				809A2A7CD4E871FD4B296266 /* OrbView.swift in Sources */,
@@ -509,6 +584,15 @@
 			files = (
 				C2395688309B36A323CE349D /* JARVISComplication.swift in Sources */,
 				57A313B76F8DE97A94467A10 /* RoundComplicationGlyph.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B99F93D0907095D67FE51F9E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7C326EC7459FAD89E2E88455 /* JarvisActivityAttributes.swift in Sources */,
+				F45504B27BF2B9E752A626CF /* JarvisLiveActivity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -537,9 +621,52 @@
 			target = 8516DF00CE354F8E8BF1A4BD /* JARVIS-WatchComplication */;
 			targetProxy = 927609A228EC0737C62CD54D /* PBXContainerItemProxy */;
 		};
+		ED2E76324324789427BCF83A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0C6013D999189D6E03F0D4CE /* JARVIS-LiveActivity */;
+			targetProxy = 78D18E8DD66D859DB7E8B46D /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		385639ECE869037006BA68C9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = V86U93FGU3;
+				INFOPLIST_FILE = "Config/JARVIS-LiveActivity-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = at.marlon.jarvis.ios.liveactivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		396475D439E204D2C8FEEFD8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = V86U93FGU3;
+				INFOPLIST_FILE = "Config/JARVIS-LiveActivity-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = at.marlon.jarvis.ios.liveactivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		42E2C48C21E39619F54EF789 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -863,6 +990,15 @@
 			buildConfigurations = (
 				789C7D2D89E9496D7F4047BA /* Debug */,
 				B7154B6483D311E0941D0D6D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F52FF6340D1F0FD74DAEFCE6 /* Build configuration list for PBXNativeTarget "JARVIS-LiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				396475D439E204D2C8FEEFD8 /* Debug */,
+				385639ECE869037006BA68C9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

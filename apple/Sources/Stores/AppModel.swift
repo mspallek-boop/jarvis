@@ -221,12 +221,38 @@ final class AppModel: ObservableObject {
     var activityLabel: String { focusedRun?.activityLabel ?? "Ich denke nach" }
     var liveResponse: String { focusedRun?.liveResponse ?? "" }
 
+    #if os(iOS)
+    /// The lock screen's and the Dynamic Island's view of a running turn. It
+    /// is the only part of the app that survives the screen going off, so it
+    /// is what replaced "Verbindung verloren" with the work still visibly
+    /// happening. Every run passes through the three functions below, so the
+    /// activity is started, updated and ended from one place each.
+    private let liveActivity = LiveActivityController()
+    #endif
+
+    private func beginRun(id: String, prompt: String) {
+        localRuns.append(LocalRun(id: id, prompt: prompt, startedAt: Date()))
+        #if os(iOS)
+        liveActivity.start(runID: id, prompt: prompt, phase: "Ich denke nach")
+        #endif
+    }
+
     private func updateRun(_ id: String, _ change: (inout LocalRun) -> Void) {
         guard let index = localRuns.firstIndex(where: { $0.id == id }) else { return }
         change(&localRuns[index])
+        #if os(iOS)
+        liveActivity.update(runID: id, phase: localRuns[index].activityLabel,
+                            reply: localRuns[index].liveResponse)
+        #endif
     }
 
-    private func finishRun(_ id: String) {
+    private func finishRun(_ id: String, reply: String = "", failure: String? = nil) {
+        #if os(iOS)
+        let text = reply.isEmpty
+            ? (localRuns.first { $0.id == id }?.liveResponse ?? "")
+            : reply
+        liveActivity.finish(runID: id, reply: text, failure: failure)
+        #endif
         localRuns.removeAll { $0.id == id }
         chatTasks[id]?.cancel()
         chatTasks[id] = nil
@@ -777,6 +803,42 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// True when a request failed only because iOS froze the app.
+    ///
+    /// A locked screen suspends the process and tears down its sockets. The
+    /// URLSession error that arrives is indistinguishable from a real outage —
+    /// "Die Netzwerkverbindung wurde unterbrochen" — so treating it as one is
+    /// what put a permanent offline banner and a red system line in the chat
+    /// every time the phone went dark. It is not an outage; it is a pause.
+    private func isSuspensionDrop(_ error: Error) -> Bool {
+        guard !voiceForeground else { return false }
+        let code = (error as? URLError)?.code
+        if case .timedOut = (error as? JarvisAPIClient.ClientError) { return true }
+        return code == .networkConnectionLost || code == .cancelled
+            || code == .notConnectedToInternet || code == .timedOut
+    }
+
+    /// Records a failed request, unless the phone simply went to sleep on it.
+    private func recordFailure(_ error: Error, announce: Bool = true) {
+        if isSuspensionDrop(error) {
+            // Say nothing and claim nothing. `unchecked` is honest — we do not
+            // know — and the next foreground check answers it for real.
+            connection = .unchecked
+            return
+        }
+        lastError = error.localizedDescription
+        connection = .offline(error.localizedDescription)
+        if announce { appendMessage(ChatMessage(role: .system, text: error.localizedDescription)) }
+    }
+
+    /// Called when the app comes back to the front, including after the screen
+    /// was merely off. Nothing else re-checks: `checkConnection` runs from the
+    /// view's `task`, which does not run again for a scene that never went
+    /// away, so a stale offline state used to survive until the app was killed.
+    func resumeFromBackground() async {
+        await checkConnection()
+    }
+
     func checkConnection() async {
         connection = .checking
         do {
@@ -789,7 +851,7 @@ final class AppModel: ObservableObject {
             }
             await refreshStatus()
         } catch {
-            connection = .offline(error.localizedDescription)
+            recordFailure(error, announce: false)
         }
     }
 
@@ -959,7 +1021,7 @@ final class AppModel: ObservableObject {
         let attachedImage = pendingImagePath
         discardPendingImage()
         let id = UUID().uuidString
-        localRuns.append(LocalRun(id: id, prompt: message, startedAt: Date()))
+        beginRun(id: id, prompt: message)
         // A new task is what the user just asked for, so it is what they are
         // looking at. The older one keeps running and stays reachable.
         focusedRunID = id
@@ -1011,7 +1073,7 @@ final class AppModel: ObservableObject {
             let response = try await pending.value
             guard localRuns.contains(where: { $0.id == id }) else { return }
             let wasFocused = focusedRunID == id
-            finishRun(id)
+            finishRun(id, reply: response.text)
             let names = response.tools.map(\.name)
             appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names,
                                       attachments: response.messageAttachments))
@@ -1029,11 +1091,9 @@ final class AppModel: ObservableObject {
         } catch {
             guard localRuns.contains(where: { $0.id == id }) else { return }
             let wasFocused = focusedRunID == id
-            finishRun(id)
+            finishRun(id, failure: isSuspensionDrop(error) ? nil : error.localizedDescription)
             if wasFocused { speech.stopSpeaking() }
-            lastError = error.localizedDescription
-            connection = .offline(error.localizedDescription)
-            appendMessage(ChatMessage(role: .system, text: error.localizedDescription))
+            recordFailure(error)
             #if os(macOS)
             // A failed turn is still a finished one; the pill must not be left
             // standing there because the answer never came.
@@ -1106,8 +1166,7 @@ final class AppModel: ObservableObject {
             connection = .online
             return response.text
         } catch {
-            connection = .offline(error.localizedDescription)
-            appendMessage(ChatMessage(role: .system, text: error.localizedDescription))
+            recordFailure(error)
             return error.localizedDescription
         }
     }

@@ -15,30 +15,15 @@
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
-	<string>APPL</string>
+	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>NSAppTransportSecurity</key>
+	<key>NSExtension</key>
 	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
 	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>JARVIS verbindet sich privat mit Hermes auf deinem Mac.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>JARVIS nutzt das Mikrofon nur während du sprichst.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>JARVIS wandelt deine Sprache lokal über Apples Spracherkennung in Text um.</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<true/>
-	</dict>
-	<key>UILaunchScreen</key>
-	<dict/>
 </dict>
 </plist>
