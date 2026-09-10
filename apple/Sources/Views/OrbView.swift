@@ -140,6 +140,10 @@ struct CubeGrid: View {
     /// scene is not `.active` — which froze the grid at exactly the moment it
     /// became the only thing on screen.
     var ignoresScenePhase: Bool = false
+    /// Folded into its top row: the orb steps aside for a picture and stays as
+    /// a header instead of vanishing. Rows fly up one after another, the lowest
+    /// last, so it reads as the grid making room — not as a cut.
+    var collapsed: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -157,7 +161,9 @@ struct CubeGrid: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let gridSize = min(geometry.size.width, geometry.size.height)
+            // Folded, the height is one row — size from the width, or the
+            // tiles would shrink along with it.
+            let gridSize = collapsed ? geometry.size.width : min(geometry.size.width, geometry.size.height)
             let gap = gridSize * 0.026 * (5 / CGFloat(columns))
             let tile = (gridSize - gap * CGFloat(columns - 1)) / CGFloat(columns)
 
@@ -179,15 +185,16 @@ struct CubeGrid: View {
                     .rotationEffect(isBauhaus ? state.rotation : .zero)
                     .position(
                         x: tile / 2 + CGFloat(column) * (tile + gap),
-                        y: tile / 2 + CGFloat(row) * (tile + gap)
+                        y: tile / 2 + CGFloat(collapsed ? 0 : row) * (tile + gap)
                     )
                     .animation(
                         .smooth(duration: 0.58).delay(state.delay),
                         value: isBauhaus
                     )
+                    .animation(foldAnimation(row: row, column: column), value: collapsed)
                 }
             }
-            .frame(width: gridSize, height: gridSize)
+            .frame(width: gridSize, height: collapsed ? tile : gridSize, alignment: .top)
         }
         .onAppear {
             if tiles.isEmpty { tiles = Self.makeTileStates(count: columns * columns) }
@@ -200,6 +207,15 @@ struct CubeGrid: View {
             animationTask?.cancel()
             animationTask = nil
         }
+    }
+
+    /// Folding, the top row stays and each lower one lands a beat later with a
+    /// small bounce; unfolding runs the other way, so the grid drops back down.
+    private func foldAnimation(row: Int, column: Int) -> Animation {
+        if reduceMotion { return .easeInOut(duration: 0.2) }
+        let rank = collapsed ? row : columns - 1 - row
+        return .spring(response: 0.42, dampingFraction: 0.68)
+            .delay(Double(rank) * 0.045 + Double(column) * 0.012)
     }
 
     private func updateAnimation() {
@@ -276,26 +292,38 @@ struct OrbView: View {
     var color: Color? = nil
     var columns: Int = 5
     var ignoresScenePhase: Bool = false
+    /// One row instead of the grid, while a picture has the stage.
+    var collapsed: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var ink: Color {
         colorScheme == .dark ? .white : .black
     }
 
     var body: some View {
-        CubeGrid(animating: listening || thinking, columns: columns,
-                 ignoresScenePhase: ignoresScenePhase)
+        CubeGrid(animating: (listening || thinking) && !collapsed, columns: columns,
+                 ignoresScenePhase: ignoresScenePhase, collapsed: collapsed)
             .foregroundStyle(color ?? ink)
             .opacity(active ? 1 : 0.9)
-            .frame(width: gridSize, height: gridSize)
+            .frame(width: gridSize, height: collapsed ? Self.rowHeight(gridSize, columns: columns) : gridSize,
+                   alignment: .top)
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.82),
+                       value: collapsed)
             .compositingGroup()
             .accessibilityHidden(true)
     }
 
     private var gridSize: CGFloat {
         size ?? (horizontalSizeClass == .compact ? 208 : 174)
+    }
+
+    /// The same arithmetic CubeGrid lays its tiles out with.
+    static func rowHeight(_ gridSize: CGFloat, columns: Int = 5) -> CGFloat {
+        let gap = gridSize * 0.026 * (5 / CGFloat(columns))
+        return (gridSize - gap * CGFloat(columns - 1)) / CGFloat(columns)
     }
 }
 

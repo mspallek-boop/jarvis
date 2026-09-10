@@ -523,7 +523,7 @@ struct ContentView: View {
             // Nothing is drawn while fewer than two tasks run, so an idle app
             // looks exactly as it did before multitasking existed.
             taskBlobs
-            largeOrbButton
+            orbButton(collapsed: picturesOnStage)
             Text(voiceLabel)
                 .font(model.appFont(.caption))
                 .tracking(1.4)
@@ -555,7 +555,9 @@ struct ContentView: View {
                 // mode never drew the message list — so an answer carrying
                 // images showed its "[Bild]" placeholder and nothing else.
                 if !latestPictures.isEmpty {
-                    voiceGallery
+                    // Keyed by message, so every new answer unrolls afresh.
+                    VoicePictureStage(pictures: latestPictures, ink: ink)
+                        .id(last.id)
                 }
                 ScrollView {
                     Text(last.role == .jarvis
@@ -574,6 +576,9 @@ struct ContentView: View {
             Spacer(minLength: 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The orb's height changes when it folds; without this the label and
+        // the text below would jump while the tiles glide.
+        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: picturesOnStage)
     }
 
     /// The pictures from the last answer — at most three, because the point is
@@ -583,21 +588,11 @@ struct ContentView: View {
         return Array(last.attachments.filter { $0.kind == .image }.prefix(3))
     }
 
-    private var voiceGallery: some View {
-        HStack(spacing: 10) {
-            ForEach(latestPictures) { picture in
-                InlineAttachmentImage(picture: picture, ink: ink)
-                    .frame(maxWidth: 130, maxHeight: 130)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(ink.opacity(0.14), lineWidth: 0.5)
-                    }
-                    .accessibilityLabel(picture.title.isEmpty ? "Bild" : picture.title)
-            }
-        }
-        .frame(maxHeight: 130)
-        .padding(.horizontal, 24)
+    /// The grid folds into one row while pictures have the stage, and unfolds
+    /// the moment he speaks, JARVIS works again, or an error needs the space.
+    private var picturesOnStage: Bool {
+        !latestPictures.isEmpty && !model.speech.isListening && !model.isWorking
+            && model.speech.errorMessage == nil && model.lastError == nil
     }
 
     /// One plus, always there, on both platforms.
@@ -819,7 +814,11 @@ struct ContentView: View {
         }
     }
 
-    private var largeOrbButton: some View {
+    private var largeOrbButton: some View { orbButton(collapsed: false) }
+
+    /// Folded to one row it is still the button: tapping it speaks again,
+    /// which is also what unfolds it.
+    private func orbButton(collapsed: Bool) -> some View {
         Button {
             Task { await model.toggleListening() }
         } label: {
@@ -827,7 +826,8 @@ struct ContentView: View {
                 active: model.connection == .online || model.speech.isSpeaking,
                 listening: model.speech.isListening,
                 thinking: model.isWorking,
-                color: ink
+                color: ink,
+                collapsed: collapsed
             )
             .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
