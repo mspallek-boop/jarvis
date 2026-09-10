@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import time
@@ -223,6 +224,51 @@ def test_the_notification_file_stays_private(tmp_path):
 
 def test_a_bad_since_value_is_refused():
     assert notify_request('GET', '/notifications?since=abc')[0] == 400
+
+
+JPEG = b'\xff\xd8\xff\xe0' + b'\x00' * 16
+
+
+@pytest.fixture
+def media(tmp_path, monkeypatch):
+    root = tmp_path / 'jarvis-media'
+    root.mkdir()
+    monkeypatch.setattr(bridge, 'LOCAL_MEDIA_ROOT', root)
+    return root
+
+
+def test_a_late_picture_reaches_the_app_labelled_by_its_bytes(media):
+    """jarvis-notify at the end of background work: the picture comes with it."""
+    (media / 'hase.png').write_bytes(JPEG)
+    assert notify_request('POST', '/notify', {'kind': 'task', 'title': 'Der Hase ist fertig',
+                                              'image': str(media / 'hase.png')})[0] == 200
+    item = notify_request('GET', '/notifications')[1]['notifications'][0]
+    assert item['attachments'] == [{'kind': 'image', 'title': 'hase.png',
+                                    'url': 'data:image/jpeg;base64,' + base64.b64encode(JPEG).decode()}]
+    assert 'image' not in item   # the Mac's path stays on the Mac
+
+
+def test_a_plain_notification_carries_no_attachments():
+    notify_request('POST', '/notify', {'kind': 'info', 'title': 'x'})
+    assert notify_request('GET', '/notifications')[1]['notifications'][0]['attachments'] == []
+
+
+@pytest.mark.parametrize('name', ['/etc/hosts', 'fehlt.png', 'text.png'])
+def test_a_picture_the_bridge_would_not_show_is_refused_up_front(media, name):
+    """The helper hears about it at once, instead of the app showing nothing later."""
+    (media / 'text.png').write_text('kein Bild')
+    path = name if name.startswith('/') else str(media / name)
+    assert notify_request('POST', '/notify', {'kind': 'task', 'title': 'x', 'image': path})[0] == 400
+    assert notify_request('GET', '/notifications')[1]['notifications'] == []
+
+
+def test_a_picture_deleted_before_the_poll_leaves_the_message(media):
+    (media / 'hase.png').write_bytes(JPEG)
+    notify_request('POST', '/notify', {'kind': 'task', 'title': 'Der Hase ist fertig',
+                                       'image': str(media / 'hase.png')})
+    (media / 'hase.png').unlink()
+    item = notify_request('GET', '/notifications')[1]['notifications'][0]
+    assert item['title'] == 'Der Hase ist fertig' and item['attachments'] == []
 
 
 # --------------------------------------------------------------- stand-ins

@@ -383,12 +383,15 @@ def prepare_answer_media(text: str) -> tuple[str, list[dict]]:
     images: dict[str, dict] = {}
     total = 0
 
-    def add(blob: bytes, title: str, declared_mime: str = "") -> str:
+    def add(blob: bytes, title: str) -> str:
         nonlocal total
         if not 0 < len(blob) <= MAX_INLINE_IMAGE_BYTES:
             raise ValueError("Bild zu groß")
+        # Trust the bytes, not the label: Hermes names MEDIA: data URLs by file
+        # suffix, so a JPEG saved as .png arrives as image/png. The URL below
+        # is rebuilt from the sniffed type, so the label never reaches the app.
         mime = _inline_mime(blob)
-        if not mime or (declared_mime and mime != declared_mime):
+        if not mime:
             raise ValueError("Ungültiger Bildtyp")
         url = f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
         if url not in images:
@@ -405,7 +408,7 @@ def prepare_answer_media(text: str) -> tuple[str, list[dict]]:
                 raise ValueError("Ungültiger Bildtyp")
             if len(encoded) > 4 * ((MAX_INLINE_IMAGE_BYTES + 2) // 3):
                 raise ValueError("Bild zu groß")
-            return add(base64.b64decode(encoded, validate=True), match[1], header[5:-7])
+            return add(base64.b64decode(encoded, validate=True), match[1])
         except (ValueError, OSError):
             return "[Bild nicht verfügbar]"
 
@@ -1050,16 +1053,23 @@ class Notifications:
         except OSError:
             pass                     # a full disk must not take the bridge down
 
-    def add(self, kind: str, title: str, text: str = "") -> dict:
+    def add(self, kind: str, title: str, text: str = "", image: str = "") -> dict:
         if kind not in NOTIFY_KINDS:
             raise ValueError(f"Unbekannte Art: {kind}")
         title = " ".join(str(title).split())[:80]
         text = " ".join(str(text).split())[:200]
         if not title:
             raise ValueError("title fehlt")
+        if image:
+            # Checked now so the helper hears about a bad path at once, and read
+            # again on every poll: only the path is kept, /tmp can be emptied.
+            if not _inline_mime(_read_local_image(image)):
+                raise ValueError("Ungültiger Bildtyp")
         with self._lock:
             item = {"id": self._next_id, "kind": kind, "title": title,
                     "text": text, "at": time.time(), "read": False}
+            if image:
+                item["image"] = image
             self._next_id += 1
             self._items.append(item)
             del self._items[:-MAX_NOTIFICATIONS]
@@ -1089,6 +1099,22 @@ class Notifications:
 
 
 NOTIFICATIONS = Notifications()
+
+
+def notification_for_app(item: dict) -> dict:
+    """The stored path becomes bounded bytes — or nothing, if the file is gone."""
+    out = {key: value for key, value in item.items() if key != "image"}
+    out["attachments"] = []
+    if item.get("image"):
+        try:
+            blob = _read_local_image(item["image"])
+            mime = _inline_mime(blob)
+        except (ValueError, OSError):
+            mime = ""
+        if mime:
+            out["attachments"] = [{"kind": "image", "title": Path(item["image"]).name[:120],
+                                   "url": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"}]
+    return out
 
 
 class HermesClient:
@@ -1775,7 +1801,8 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "Ungültiger since-Wert"})
                 return
             unread_only = (query.get("unread") or [""])[0] in {"1", "true", "yes"}
-            items = NOTIFICATIONS.since(max(0, after), unread_only)
+            items = [notification_for_app(item)
+                     for item in NOTIFICATIONS.since(max(0, after), unread_only)]
             self._json(HTTPStatus.OK, {"notifications": items,
                                        "unread": NOTIFICATIONS.unread(),
                                        "latest": items[-1]["id"] if items else after})
@@ -2029,14 +2056,15 @@ class JarvisHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/notify":
                 # Written by JARVIS's own helpers on this machine (the WhatsApp
-                # reply watcher today). Same app token as everything else: the
-                # bridge is loopback-bound and there is no second trust level.
+                # reply watcher, jarvis-notify). Same app token as everything
+                # else: the bridge is loopback-bound, no second trust level.
                 try:
                     item = NOTIFICATIONS.add(
                         str(body.get("kind") or "info"),
                         str(body.get("title") or ""),
-                        str(body.get("text") or ""))
-                except ValueError as exc:
+                        str(body.get("text") or ""),
+                        str(body.get("image") or ""))
+                except (ValueError, OSError) as exc:
                     self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                     return
                 self._json(HTTPStatus.OK, {"notification": item,

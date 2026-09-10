@@ -458,24 +458,34 @@ App-Bearer wie `/chat`.
 ```
 GET  /notifications?since=<id>&unread=1
 POST /notifications/read   {"through": <id>}
-POST /notify               {"kind","title","text"}
+POST /notify               {"kind","title","text","image"?}
 ```
 
 ```json
 {"notifications": [{"id": 1, "kind": "whatsapp_reply", "title": "Rici",
                     "text": "hat geantwortet", "at": 1788772924.37,
-                    "read": false}],
+                    "read": false, "attachments": []}],
  "unread": 1, "latest": 1}
 ```
 
 - `kind`: `whatsapp_reply | task | info`; alles andere wird mit 400 abgelehnt.
 - `title` ≤ 80, `text` ≤ 200 Zeichen, beide auf eine Zeile normalisiert.
+- `image` (optional, neu 2026-09-10): Pfad direkt in `/tmp/jarvis-media`, dieselbe
+  Sperre wie `MEDIA:` in Antworten — keine Symlinks oder Hardlinks, nur PNG, JPEG,
+  GIF, WEBP, BMP bis 5 MB. Ungültig oder fehlend → 400. Gespeichert wird nur der Pfad.
+- Jede Meldung trägt `attachments` im Format von `/chat`: das Bild als
+  `data:`-URL, der Typ nach dem Inhalt, nicht nach der Endung. Ist die Datei bis
+  zum Abruf verschwunden, bleibt die Meldung und `attachments` ist leer. Clients
+  ohne das Feld ignorieren es.
+- Die App zeigt eine Meldung mit Bild als JARVIS-Nachricht mit Bild (auch in der
+  Sprachansicht), eine ohne Bild als Systemzeile.
 - Warteschlange auf 50 begrenzt, überlebt einen Bridge-Neustart, Datei 600.
 - `latest` ist der Cursor für das nächste `since`.
 - Pull statt Push mit Absicht: ein verpasster Moment wird zu einer späten
   Benachrichtigung, nie zu einer verlorenen, und nichts weckt ein Telefon.
-- `POST /notify` schreiben JARVIS' eigene Helfer auf dieser Maschine, heute der
-  WhatsApp-Antwort-Watcher. Nachrichteninhalt wird nie übertragen.
+- `POST /notify` schreiben JARVIS' eigene Helfer auf dieser Maschine: der
+  WhatsApp-Antwort-Watcher (nie Nachrichteninhalt) und `jarvis-notify`, mit dem
+  JARVIS das Ergebnis einer Hintergrundarbeit nachliefert.
 
 Die zugehörige UI-Vorgabe steht in `docs/APP_UI_MULTITASKING_NOTIFICATIONS.md`.
 

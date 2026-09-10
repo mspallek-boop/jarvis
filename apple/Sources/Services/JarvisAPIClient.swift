@@ -132,6 +132,9 @@ struct JarvisAPIClient {
         let title: String
         let text: String
         let at: Double
+        /// A picture JARVIS delivers after the turn has ended. Optional so a
+        /// bridge from before 2026-09-10, which sends no such key, still decodes.
+        let attachments: [MessageAttachment]?
 
         var line: String {
             let subject = title.trimmingCharacters(in: .whitespacesAndNewlines)

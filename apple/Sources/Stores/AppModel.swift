@@ -980,7 +980,12 @@ final class AppModel: ObservableObject {
             guard !response.notifications.isEmpty else { return }
             let newItems = response.notifications
             for item in newItems {
-                appendMessage(ChatMessage(role: .system, text: item.line))
+                // A picture is JARVIS delivering something late, so it gets his
+                // bubble — and the voice stage's gallery. A nudge stays a quiet line.
+                let pictures = MessageAttachment.bounded(item.attachments ?? [])
+                appendMessage(pictures.isEmpty
+                    ? ChatMessage(role: .system, text: item.line)
+                    : ChatMessage(role: .jarvis, text: item.line, attachments: pictures))
             }
             notificationBanner = newItems.count == 1
                 ? newItems[0].line

@@ -97,12 +97,26 @@ def test_hardlink_fifo_directory_and_oversize_rejected(media_dir, monkeypatch):
 
 @pytest.mark.parametrize("url", [
     "data:image/png;base64,%%%", "data:image/svg+xml;base64,PHN2Zy8+",
-    data_url(b"<html>script</html>"), data_url(mime="image/jpeg"),
+    data_url(b"<html>script</html>"),
     "data:text/html;base64,PHNjcmlwdD4=", "data:image/png;base64,",
 ])
-def test_invalid_data_and_mime_mismatch_leave_visible_failure(url):
+def test_invalid_data_leaves_visible_failure(url):
     text, attachments = bridge.prepare_answer_media(f"![bad]({url})")
     assert text == "[Bild nicht verfügbar]" and attachments == []
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+
+
+def test_a_jpeg_saved_as_png_still_arrives_labelled_by_its_bytes(media_dir):
+    # Hermes names MEDIA: data URLs by suffix, so this is what a downloaded
+    # JPEG saved as hase.png looks like by the time it reaches the bridge.
+    expected = f"data:image/jpeg;base64,{base64.b64encode(JPEG).decode()}"
+    text, attachments = bridge.prepare_answer_media(f"![hase.png]({data_url(JPEG)})")
+    assert text == "[Bild]" and attachments[0]["url"] == expected
+    (media_dir / "hase.png").write_bytes(JPEG)
+    text, attachments = bridge.prepare_answer_media(f"MEDIA:{media_dir / 'hase.png'}")
+    assert text == "[Bild]" and attachments[0]["url"] == expected
 
 
 def test_missing_and_fake_local_images_leave_visible_failure(media_dir):
