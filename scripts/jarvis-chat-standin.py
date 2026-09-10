@@ -39,6 +39,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import contextlib
+import fcntl
 import re
 import subprocess
 import sys
@@ -78,6 +80,35 @@ RATE_WINDOW_SECONDS = 30 * 60
 # nagging is that people stop reading the suggestion at all.
 OFFER_COOLDOWN_SECONDS = 12 * 3600
 
+# Where the gateway records what it received and sent. It is the only place a
+# stand-in can read the conversation from: the WhatsApp bridge log carries
+# redacted ids and body lengths, and its message queue is drained by the
+# gateway itself, so a second reader there would steal messages.
+GATEWAY_LOG = Path(os.environ.get("JARVIS_GATEWAY_LOG",
+                                  HOME / ".hermes/logs/gateway.log"))
+SESSION_DIR = Path(os.environ.get("JARVIS_WA_SESSION",
+                                  HOME / ".hermes/whatsapp/session"))
+GATEWAY_LABEL = os.environ.get("JARVIS_GATEWAY_LABEL", "ai.hermes.gateway")
+# The port the JARVIS app reaches Hermes on.
+API_PORT = int(os.environ.get("JARVIS_HERMES_API_PORT", "8642"))
+# One inbound message quoted back to the user, cut to a readable line. The
+# gateway already truncates at 80, so this is a second belt, not the trousers.
+MAX_GIST_CHARS = 90
+# The gateway forwards the owner's own messages in a stand-in chat with this
+# prefix. They are his, not the contact's: they must never be counted as an
+# exchange, reported back to him, or spoken aloud.
+OWNER_PREFIX = "[owner reply]"
+# A single poll must not pull an unbounded log into memory.
+MAX_LOG_READ = 2 * 1024 * 1024
+# How long the whole system waits before asking launchd for another gateway
+# restart, and how many times in a row it may ask before giving up. Without
+# both, a permanently broken API turns the poller into a restart loop that
+# interrupts a live conversation once a minute.
+RESTART_COOLDOWN_SECONDS = 300.0
+MAX_RESTART_ATTEMPTS = 3
+RESTART_STAMP = Path(os.environ.get("JARVIS_RESTART_STAMP",
+                                    HOME / ".hermes/jarvis-gateway-restart.stamp"))
+
 
 # ------------------------------------------------------------------- helpers
 
@@ -102,6 +133,32 @@ def chat_id(key: str) -> str:
     return f"{key}@s.whatsapp.net"
 
 
+def aliases(key: str) -> set[str]:
+    """Every id this contact can appear under.
+
+    An inbound chat is reported as a LID (`1332…@lid`) while the number a
+    stand-in was started from is a phone JID. Without walking the session's
+    mapping files the two never match, and a stand-in that is answering
+    perfectly looks asleep.
+    """
+    found: set[str] = set()
+    queue = [bare(key)]
+    while queue:
+        current = queue.pop()
+        if not current or current in found:
+            continue
+        found.add(current)
+        for suffix in ("", "_reverse"):
+            try:
+                mapped = bare(json.loads(
+                    (SESSION_DIR / f"lid-mapping-{current}{suffix}.json").read_text()))
+            except (OSError, ValueError):
+                continue
+            if mapped and mapped not in found:
+                queue.append(mapped)
+    return found
+
+
 def human_duration(hours: float) -> str:
     if hours < 1:
         return f"{round(hours * 60)} Minuten"
@@ -124,9 +181,40 @@ def load() -> dict:
     return data
 
 
+@contextlib.contextmanager
+def state_lock(blocking: bool = True):
+    """Hold the state file across a whole load-modify-save.
+
+    `poll` now does real work between reading and writing, and `stop`,
+    `takeover` and `note` can run at any moment from the agent. Without a lock
+    a poll that started before a `stop` writes its older snapshot afterwards
+    and resurrects a stand-in the user just ended — which means JARVIS goes on
+    answering someone in his name after he told it to stop.
+    """
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = STATE_PATH.with_suffix(".lock").open("a+")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX if blocking
+                        else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Only `poll` asks without blocking. Starting a stand-in holds the
+            # lock while it waits for the gateway, and a minute-by-minute poll
+            # queueing up behind that would pile ticks on top of each other.
+            # Skipping is free: the next tick is sixty seconds away.
+            yield False
+            return
+        yield True
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
 def save(state: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".tmp")
+    # Per-process name: two writers must not share one temporary file.
+    tmp = STATE_PATH.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(state, indent=2))
     os.chmod(tmp, 0o600)   # contact numbers and gists are personal data
     tmp.replace(STATE_PATH)
@@ -177,14 +265,19 @@ def system_banner(text: str) -> None:
         pass
 
 
-def deliver(title: str, text: str, speak: bool) -> None:
-    """The app is where JARVIS lives, so that is where a report belongs."""
+def deliver(title: str, text: str, speak: bool, spoken: str = "") -> None:
+    """The app is where JARVIS lives, so that is where a report belongs.
+
+    `spoken` exists because the two channels do not deserve the same content.
+    The app is a screen the user chose to look at; the speaker and the lock
+    screen are a room other people are in.
+    """
     delivered = post_json(NOTIFY_URL, {"kind": "chat_standin", "title": title, "text": text},
                           {"Authorization": f"Bearer {env_token('JARVIS_APP_TOKEN', 'JARVIS_HUD_TOKEN')}"})
     if not delivered:
-        system_banner(f"{title}: {text}")
+        system_banner(f"{title}: {spoken or text}")
     if speak:
-        post_json(SAY_URL, {"text": f"{title}. {text}", "priority": "normal"},
+        post_json(SAY_URL, {"text": f"{title}. {spoken or text}", "priority": "normal"},
                   {"X-Jarvis-Token": env_token("JARVIS_HUD_TOKEN", "JARVIS_APP_TOKEN")})
 
 
@@ -246,12 +339,32 @@ def summarise(standin: dict) -> str:
     return text
 
 
+def spoken_form(standin: dict, shown: str, closing: str) -> str:
+    """What may be said out loud, which is not always what may be shown.
+
+    A gist JARVIS wrote is its own summary and safe to speak. A line read out
+    of the gateway log is the other person's message, verbatim — a diagnosis,
+    an address, a one-time code. That belongs on the screen the user chose to
+    look at, never on a speaker or a lock screen banner. So a report built
+    from log lines is announced by its count, and the words stay in the app.
+    """
+    pending = standin.get("pending") or []
+    if not any(item.get("src") == "log" for item in pending):
+        return shown          # JARVIS's own words, or a closing line: speak it
+    count = len(pending)
+    news = "eine neue Nachricht" if count == 1 else f"{count} neue Nachrichten"
+    return f"{news} — {closing}" if closing else news
+
+
 def flush(state: dict, key: str, standin: dict, now: float, speak: bool,
           closing: str = "") -> None:
     text = summarise(standin)
     if closing:
         text = f"{text} — {closing}" if standin.get("pending") else closing
-    deliver(standin.get("name") or key, text, speak)
+    # After `text` is final: a stand-in that ends with nothing pending must
+    # still announce that it ended, not summarise an empty list.
+    spoken = spoken_form(standin, text, closing)
+    deliver(standin.get("name") or key, text, speak, spoken=spoken)
     standin["pending"] = []
     standin["last_report"] = now
     standin["reported"] = int(standin.get("reported", 0)) + 1
@@ -504,10 +617,233 @@ def cmd_note(args: argparse.Namespace) -> int:
     return 0
 
 
+# The gateway logs the body with %r, so the quote character depends on the
+# message: repr("Wie geht's?") comes out double-quoted. Matching only `msg='`
+# silently dropped every German message containing an apostrophe — "geht's",
+# "gibt's", "hab's" — which is most of them. The backreference accepts either
+# quote, and the greedy body runs to the *last* ` reply_to_id=` so the same
+# text inside a message cannot cut the gist short. `user=.*?` is non-greedy
+# because a WhatsApp push name contains spaces ("Marlon Spallek").
+INBOUND_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(?P<ms>\d{1,6}) .*?"
+    r"inbound message: platform=whatsapp user=.*? chat=(?P<chat>\S+) "
+    r"msg=(?P<q>[\'\"])(?P<msg>.*)(?P=q) reply_to_id=")
+
+
+def log_time(text: str, millis: str = "0") -> float:
+    """Local log stamp to epoch, milliseconds kept.
+
+    The milliseconds matter twice: a message that arrives in the same second a
+    stand-in starts must not be read as older than it, and two identical
+    replies seconds apart must stay two events.
+    """
+    try:
+        base = time.mktime(time.strptime(text, "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return 0.0
+    return base + int((millis or "0")[:3].ljust(3, "0")) / 1000.0
+
+
+def scan_gateway_log(state: dict, now: float) -> bool:
+    """Turn what the gateway actually received into stand-in notes.
+
+    The design left the gist to JARVIS: it answers the message, so it knows
+    what the message was about. In a WhatsApp turn it cannot say so —
+    `platform_toolsets.whatsapp` grants the WhatsApp toolset and no terminal,
+    so there is nothing to call `note` with. The reporting half of a stand-in
+    was therefore dead while the answering half worked, and the app read "noch
+    nichts passiert" straight through a live conversation. That is the worse
+    of the two failures: the user stops watching a chat that is being answered
+    in their name.
+
+    So the pacing stays here and the content is read from the gateway's own
+    log, which is the one place the bodies exist. `note` still works and wins:
+    a gist JARVIS wrote is better than a quoted line.
+    """
+    if not state["standins"]:
+        return False
+    try:
+        stat = GATEWAY_LOG.stat()
+    except OSError:
+        return False
+    mark = state.setdefault("log", {})
+    before = (mark.get("offset"), mark.get("inode"))
+    # An unseen or rotated log is read from the top and filtered by each
+    # stand-in's start time, so a stand-in that began before this ever ran
+    # still gets its conversation instead of starting blind.
+    offset = 0 if mark.get("inode") != stat.st_ino else int(mark.get("offset") or 0)
+    if offset > stat.st_size:
+        offset = 0
+    # Never read the whole file into memory: a log that grew without anyone
+    # polling is skipped forward instead.
+    if stat.st_size - offset > MAX_LOG_READ:
+        offset = stat.st_size - MAX_LOG_READ
+    # Read bytes, not text. A decoded chunk cannot be measured back into a
+    # byte offset: one undecodable byte becomes a three-byte replacement
+    # character, and from then on every seek is off by the difference — the
+    # scanner silently reads from the middle of lines for ever after.
+    try:
+        with GATEWAY_LOG.open("rb") as handle:
+            handle.seek(offset)
+            raw = handle.read(MAX_LOG_READ)
+    except OSError:
+        return False
+    # The gateway may be mid-write. Stop at the last complete line and leave
+    # the offset before the tail, or a half-written message is consumed,
+    # fails to parse, and is lost for good. A newline byte cannot occur inside
+    # a UTF-8 sequence, so this never splits a character.
+    complete, newline, _tail = raw.rpartition(b"\n")
+    if not newline:
+        return False                     # nothing complete yet; come back later
+    mark["offset"] = offset + len(complete) + 1
+    mark["inode"] = stat.st_ino
+    chunk = complete.decode("utf-8", "replace")
+
+    # A stale mapping file can hand two stand-ins the same alias. Attributing
+    # the message to whichever won the dict is worse than dropping it: it puts
+    # one contact's words into another contact's report.
+    by_alias: dict = {}
+    for key in state["standins"]:
+        for alias in aliases(key):
+            by_alias[alias] = key if by_alias.get(alias, key) == key else None
+    changed = False
+    for line in chunk.splitlines():
+        match = INBOUND_RE.search(line)
+        if not match:
+            continue
+        key = by_alias.get(bare(match.group("chat")))
+        if key is None:
+            continue        # not a stand-in, or an ambiguous alias
+        standin = state["standins"][key]
+        at = log_time(match.group("ts"), match.group("ms")) or now
+        if at < standin.get("started", 0):
+            continue        # older than this stand-in: not its conversation
+        gist = " ".join(match.group("msg").split())[:MAX_GIST_CHARS]
+        if not gist or gist.startswith(OWNER_PREFIX):
+            continue        # the user's own message in that chat is not news
+        if any(item.get("gist") == gist and item.get("at") == at
+               for item in standin.get("history") or []):
+            continue        # the very same log line, re-read after a reset
+        entry = {"at": at, "gist": gist, "urgent": False, "src": "log"}
+        standin.setdefault("pending", []).append(entry)
+        standin["history"] = (standin.get("history") or [])[-(MAX_HISTORY - 1):] + [entry]
+        standin["exchanges"] = int(standin.get("exchanges", 0)) + 1
+        inbound = [t for t in standin.setdefault("inbound", [])
+                   if now - t <= RATE_WINDOW_SECONDS]
+        inbound.append(at)
+        standin["inbound"] = inbound
+        changed = True
+    return changed or (mark.get("offset"), mark.get("inode")) != before
+
+
+def api_listeners() -> set:
+    """The pids holding the app's Hermes port, or None when it cannot be told.
+
+    Asked with `lsof` rather than by connecting: a poll tick must not make a
+    network call, and the test suite is deliberately offline. The pids matter
+    and not just a yes/no, because during the restart race the *old* listener
+    still holds the port for a moment — a plain "is it bound?" would call that
+    a successful restart and walk away from the exact failure it exists to
+    catch.
+    """
+    try:
+        done = subprocess.run(["lsof", "-t", "-nP", f"-iTCP:{API_PORT}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = getattr(done, "stdout", None)
+    if output is None:
+        return None
+    return {pid for pid in output.split() if pid.isdigit()}
+
+
+def api_listening() -> bool:
+    """Whether the port is held at all. Unknown counts as held: doing nothing
+    is the right answer whenever the failure has not actually been shown."""
+    pids = api_listeners()
+    return True if pids is None else bool(pids)
+
+
+def gateway_service_running() -> bool:
+    try:
+        done = subprocess.run(["launchctl", "print",
+                               f"gui/{os.getuid()}/{GATEWAY_LABEL}"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and "state = running" in done.stdout
+
+
+def read_restart_stamp() -> tuple:
+    """(when the last restart was asked for, how many in a row) — shared file.
+
+    Shared on purpose: the mode script and this poller can both decide a
+    restart is due within the same minute, and two `kickstart -k` in a row
+    kill the gateway that the first one had just brought up.
+    """
+    try:
+        when, attempts = (RESTART_STAMP.read_text().split() + ["0"])[:2]
+        return float(when), int(attempts)
+    except (OSError, ValueError):
+        return 0.0, 0
+
+
+def note_restart_request(now: float, attempts: int) -> None:
+    try:
+        RESTART_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        RESTART_STAMP.write_text(f"{now} {attempts}")
+    except OSError:
+        pass
+
+
+def ensure_api_up() -> None:
+    """Bring the app's Hermes port back when a restart came up deaf.
+
+    Switching receive mode restarts the gateway, and the replacement sometimes
+    reaches for the API port before the old listener has let go of it. It logs
+    `address already in use`, drops api_server, and runs on with WhatsApp
+    only — so the stand-in keeps answering while the JARVIS app says "Hermes
+    ist nicht erreichbar". Every stand-in start and stop can cause it, which
+    is why something outside the gateway has to notice.
+
+    Three guards, because a repair that runs every minute is its own outage:
+
+    - only when the service is up but the port is not, so a gateway the user
+      stopped on purpose stays stopped;
+    - not within the cooldown, so this and the mode script cannot restart the
+      gateway twice on top of each other;
+    - and never more than MAX_RESTART_ATTEMPTS in a row, because a permanently
+      misconfigured API would otherwise interrupt a live conversation once a
+      minute for ever. Giving up leaves the app showing "nicht erreichbar",
+      which is the honest state and a quiet one.
+    """
+    now = time.time()
+    if api_listening():
+        with contextlib.suppress(OSError):
+            RESTART_STAMP.unlink()      # healthy again: forget the history
+        return
+    if not gateway_service_running():
+        return
+    when, attempts = read_restart_stamp()
+    if now - when < RESTART_COOLDOWN_SECONDS:
+        return
+    if attempts >= MAX_RESTART_ATTEMPTS:
+        print(f"Hermes-API auf {API_PORT} bleibt tot — nach {attempts} Versuchen "
+              f"kein weiterer Neustart.", file=sys.stderr)
+        return
+    note_restart_request(now, attempts + 1)
+    try:
+        subprocess.run(["launchctl", "kickstart", "-k",
+                        f"gui/{os.getuid()}/{GATEWAY_LABEL}"],
+                       capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def cmd_poll(_args: argparse.Namespace) -> int:
     now = time.time()
     state = load()
-    changed = False
+    changed = scan_gateway_log(state, now)
     for key, standin in list(state["standins"].items()):
         if now >= standin.get("until", 0):
             finish(state, key, standin, now,
@@ -520,6 +856,7 @@ def cmd_poll(_args: argparse.Namespace) -> int:
     if changed:
         save(state)
     ensure_mode_matches(state, now)
+    ensure_api_up()
     return 0
 
 
@@ -597,7 +934,14 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
-        return args.func(args)
+        # `status` only reads; everything else is a load-modify-save that must
+        # not interleave with another one.
+        if args.func is cmd_status:
+            return args.func(args)
+        with state_lock(blocking=args.func is not cmd_poll) as acquired:
+            if not acquired:
+                return 0        # another command owns the state right now
+            return args.func(args)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2

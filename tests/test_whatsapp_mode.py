@@ -207,7 +207,92 @@ def test_restart_goes_through_launchd_so_the_agent_does_not_stall(mode, monkeypa
 
     monkeypatch.setattr(mode.subprocess, "run", fake_run)
     assert mode._real_restart_gateway() is True
-    assert calls == [["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]]
+    kicks = [c for c in calls if c and c[0] == "launchctl"]
+    assert kicks[0] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+    # The CLI path is the thing this test exists to rule out.
+    assert not any("gateway" in argv and "restart" in argv for argv in calls[1:])
+
+
+def port_probe(mode, monkeypatch, pid_for_kick):
+    """Fake shell where `lsof -t` really answers with pids.
+
+    Deliberately not a boolean stub of `api_listening`: the point of the fix is
+    that the *old* listener still holding the port must not read as a finished
+    restart, and only real pid output exercises that.
+    """
+    calls = {"kicks": 0, "argv": []}
+
+    def fake_run(argv, **kwargs):
+        calls["argv"].append(list(argv))
+        if argv and argv[0] == "lsof":
+            pids = pid_for_kick(calls["kicks"])
+            return type("Done", (), {"returncode": 0, "stdout": pids})()
+        if argv and argv[0] == "launchctl":
+            calls["kicks"] += 1
+        return type("Done", (), {"returncode": 0, "stdout": ""})()
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    monkeypatch.setattr(mode, "API_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(mode.time, "sleep", lambda _s: None)
+    return calls
+
+
+def test_the_old_listener_still_holding_the_port_is_not_a_finished_restart(
+        mode, monkeypatch, tmp_path):
+    """The exact race the fix exists for.
+
+    The replacement reaches for the port while the previous listener still has
+    it. A plain "is something bound?" would call that a success and walk away,
+    leaving a gateway that fails to bind and runs on without its API — the
+    stand-in answers, the app says Hermes is unreachable.
+    """
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    monkeypatch.setattr(mode, "RESTART_STAMP", tmp_path / "restart.stamp")
+    # The old pid keeps the port until a second kickstart has been asked for.
+    calls = port_probe(mode, monkeypatch, lambda k: "222\n" if k >= 2 else "111\n")
+
+    assert mode._real_restart_gateway() is True
+    kicks = [c for c in calls["argv"] if c and c[0] == "launchctl"]
+    assert kicks == [["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]] * 2
+
+
+def test_a_port_that_never_changes_hands_is_a_failed_restart(mode, monkeypatch, tmp_path):
+    """Two attempts and the same old listener: the caller must hear failure."""
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    monkeypatch.setattr(mode, "RESTART_STAMP", tmp_path / "restart.stamp")
+    port_probe(mode, monkeypatch, lambda _k: "111\n")
+
+    assert mode._real_restart_gateway() is False
+
+
+def test_an_unanswerable_probe_does_not_force_a_second_restart(mode, monkeypatch, tmp_path):
+    """No lsof, no judgement: never turn "cannot tell" into another restart."""
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    monkeypatch.setattr(mode, "RESTART_STAMP", tmp_path / "restart.stamp")
+    calls = {"argv": []}
+
+    def fake_run(argv, **kwargs):
+        calls["argv"].append(list(argv))
+        if argv and argv[0] == "lsof":
+            raise OSError("lsof fehlt")
+        return type("Done", (), {"returncode": 0, "stdout": ""})()
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    monkeypatch.setattr(mode, "API_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(mode.time, "sleep", lambda _s: None)
+
+    assert mode._real_restart_gateway() is True
+    kicks = [c for c in calls["argv"] if c and c[0] == "launchctl"]
+    assert len(kicks) == 1
 
 
 def test_restart_falls_back_to_the_cli_when_no_service_is_installed(mode, monkeypatch, tmp_path):
@@ -221,7 +306,8 @@ def test_restart_falls_back_to_the_cli_when_no_service_is_installed(mode, monkey
 
     monkeypatch.setattr(mode.subprocess, "run", fake_run)
     assert mode._real_restart_gateway() is True
-    assert calls[0][1:] == ["gateway", "restart"]
+    cli = [c for c in calls if c and c[0] != "lsof"]
+    assert cli[0][1:] == ["gateway", "restart"]
 
 
 def test_a_refused_kickstart_still_tries_the_cli(mode, monkeypatch, tmp_path):
@@ -238,5 +324,6 @@ def test_a_refused_kickstart_still_tries_the_cli(mode, monkeypatch, tmp_path):
 
     monkeypatch.setattr(mode.subprocess, "run", fake_run)
     assert mode._real_restart_gateway() is True
-    assert calls[0][0] == "launchctl"
-    assert calls[1][1:] == ["gateway", "restart"]
+    real = [c for c in calls if c and c[0] != "lsof"]
+    assert real[0][0] == "launchctl"
+    assert real[1][1:] == ["gateway", "restart"]

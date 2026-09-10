@@ -132,6 +132,67 @@ def hermes_binary() -> str:
 
 GATEWAY_LABEL = "ai.hermes.gateway"
 GATEWAY_PLIST = Path.home() / "Library/LaunchAgents" / f"{GATEWAY_LABEL}.plist"
+# The port the JARVIS app reaches Hermes on, and how long a replacement
+# gateway may take to claim it before we assume it never will.
+API_PORT = int(os.environ.get("JARVIS_HERMES_API_PORT", "8642"))
+API_WAIT_SECONDS = 45.0
+# Shared with jarvis-chat-standin.py: both may decide a restart is due within
+# the same minute, and two `kickstart -k` on top of each other kill the
+# gateway the first one just started.
+RESTART_COOLDOWN_SECONDS = 300.0
+RESTART_STAMP = Path(os.environ.get("JARVIS_RESTART_STAMP",
+                                    Path.home() / ".hermes/jarvis-gateway-restart.stamp"))
+
+
+def api_listeners() -> set:
+    """The pids holding the app's Hermes port, or None when it cannot be told.
+
+    Asked with `lsof` rather than by connecting: a mode switch must not make a
+    network call. The pids matter and not just a yes/no — during the race the
+    *old* listener still holds the port for a moment, and a plain "is it
+    bound?" would report the restart as a success while the replacement was
+    still about to fail to bind.
+    """
+    try:
+        done = subprocess.run(["lsof", "-t", "-nP", f"-iTCP:{API_PORT}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = getattr(done, "stdout", None)
+    if output is None:
+        return None
+    return {pid for pid in output.split() if pid.isdigit()}
+
+
+def api_listening() -> bool:
+    pids = api_listeners()
+    return True if pids is None else bool(pids)
+
+
+def await_new_api(before, seconds: float) -> bool:
+    """Wait until the port is held by a process that was not holding it before.
+
+    `before` is None when lsof could not answer at all; there is nothing to
+    compare against then, so any listener counts and the caller is no worse
+    off than before this check existed.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        now_pids = api_listeners()
+        if now_pids is None:
+            return True
+        if now_pids and (before is None or now_pids - before):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def note_restart_request() -> None:
+    try:
+        RESTART_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        RESTART_STAMP.write_text(f"{time.time()} 1")
+    except OSError:
+        pass
 
 
 def restart_gateway() -> bool:
@@ -149,13 +210,32 @@ def restart_gateway() -> bool:
     when this process dies with the old gateway, and the new one starts at
     once instead of after a KeepAlive backoff.
     """
+    before = api_listeners()
     if GATEWAY_PLIST.exists():
         try:
             done = subprocess.run(
                 ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{GATEWAY_LABEL}"],
                 capture_output=True, timeout=30)
             if done.returncode == 0:
-                return True
+                note_restart_request()
+                if await_new_api(before, API_WAIT_SECONDS):
+                    return True
+                # The replacement reached for the API port before the old
+                # listener let go of it: api_server failed to bind, and the
+                # gateway came up with WhatsApp only. It answers the stand-in
+                # and is invisible to the app, which is the confusing half of
+                # the failure. The old process is gone by now, so a second
+                # kickstart binds cleanly.
+                before = api_listeners()
+                try:
+                    subprocess.run(
+                        ["launchctl", "kickstart", "-k",
+                         f"gui/{os.getuid()}/{GATEWAY_LABEL}"],
+                        capture_output=True, timeout=30)
+                except (OSError, subprocess.SubprocessError):
+                    return False
+                note_restart_request()
+                return await_new_api(before, API_WAIT_SECONDS)
         except (OSError, subprocess.SubprocessError):
             pass
         # Fall through: an uninstalled or renamed service is a reason to try
