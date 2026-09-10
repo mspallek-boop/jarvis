@@ -64,6 +64,16 @@ send unchanged: a dated heading, a compact plain-text table, separate status
 badges, then one paragraph listing every recorded food and drink. Values that
 were never logged are shown as `nicht erfasst`, never as invented zeroes.
 
+It goes out every evening at 22:00 to the WhatsApp group "Nährwerte Jarvis"
+(members: the user only). `scripts/jarvis-calorie-balance.py`, started by
+`launchd/com.jarvis.calorie-balance.plist` from `~/.hermes/services`, fetches
+the day summary, formats it with the plugin's own `report.py` and sends it with
+`hermes send` — no model in between, so a rate-limited free model can neither
+delay nor reword it. It sends at most once per day and only until midnight, so
+a Mac that sleeps through 22:00 catches up that evening but never sends last
+night's balance the next morning. The group's chat id lives in `~/.hermes/.env`
+as `JARVIS_CALORIE_REPORT_CHAT`; a failed send is reported in the JARVIS app.
+
 ## Activity (steps and calorie balance from Apple Health)
 
 The iPhone/Watch app — not the Mac, which has no HealthKit — reads today's
