@@ -36,10 +36,24 @@ struct JarvisActivityAttributes: ActivityAttributes {
         var failure: String?
 
         /// The trailing slice of the answer that fits a lock screen.
+        ///
+        /// Two lines, not four. The lock screen is a place to learn that an
+        /// answer exists, not to read it — and everything here is visible to
+        /// whoever is standing near the phone, which on a charging stand is
+        /// all evening. The app is where the answer lives.
         var replyExcerpt: String {
             let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.count > 240 else { return trimmed }
-            return "…" + trimmed.suffix(240)
+            guard trimmed.count > 120 else { return trimmed }
+            return "…" + trimmed.suffix(120)
+        }
+
+        /// What VoiceOver says instead of reading a grid of squares.
+        ///
+        /// The mark and the dot carry the state visually; without this they
+        /// carry it by colour alone, which `accessibility.md` rules out.
+        var spokenStatus: String {
+            if let failure { return "JARVIS: \(failure)" }
+            return isFinished ? "JARVIS ist fertig" : "JARVIS: \(phase)"
         }
     }
 }

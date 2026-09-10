@@ -25,44 +25,67 @@ private struct GridGlyph: View {
     }
 }
 
-/// A quiet pulse while work is happening, and stillness when it is not.
-/// Motion on a lock screen has to earn itself: it is the one signal that says
-/// "still running" without any words.
-private struct StatusGlyph: View {
-    let finished: Bool
-    let failed: Bool
-    /// Nil on the Dynamic Island, which is always black and takes the system
-    /// accent; set on the lock screen, where the app's own colour is the ground.
+/// The mark, and the one thing it has to say: working, done, or broken.
+///
+/// The breathing is the only motion left, and it is switched off in the three
+/// places motion is either wrong or impossible: when the turn is over, when
+/// the display has dimmed to its always-on state, and when the user has asked
+/// the system for less movement. A pulse that runs forever on a screen the
+/// user is not looking at is decoration, and decoration is what made this
+/// thing feel loud.
+private struct Mark: View {
+    let state: JarvisActivityAttributes.ContentState
+    /// Nil on the Dynamic Island, which is a hole in the display and takes the
+    /// system accent; set on the lock screen, where the app's colour is ground.
     var tint: Color?
+    var size: CGFloat = 18
+
+    @Environment(\.isLuminanceReduced) private var dimmed
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breathing = false
+
+    private var resting: Bool { state.isFinished || state.failure != nil }
+    private var still: Bool { resting || dimmed || reduceMotion }
 
     var body: some View {
         GridGlyph()
-            .foregroundStyle(failed ? Color.orange : (tint ?? (finished ? Color.secondary : Color.accentColor)))
-            .frame(width: 22, height: 22)
-            .opacity(finished || failed ? 1 : (breathing ? 1 : 0.45))
-            .animation(finished || failed ? nil
-                       : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+            .foregroundStyle(state.failure != nil ? Color.orange
+                             : (tint ?? (state.isFinished ? Color.secondary : Color.accentColor)))
+            .frame(width: size, height: size)
+            .opacity(still ? 1 : (breathing ? 1 : 0.5))
+            .animation(still ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
                        value: breathing)
             .onAppear { breathing = true }
+            .accessibilityLabel(Text(state.spokenStatus))
     }
 }
 
-/// One line that says where the turn stands. The phase while it runs, the
-/// reason while it is broken, and nothing self-congratulatory when it is done.
+/// Where the turn stands, in one line and at a weight that survives a glance.
+///
+/// `live-activities.md › Best practices`: "Use large, heavier-weight text — a
+/// medium weight or higher." The old caption-sized secondary text failed that
+/// twice over.
 private struct PhaseLine: View {
     let state: JarvisActivityAttributes.ContentState
     var tint: Color?
+    var font: Font = .footnote
 
     var body: some View {
         Text(state.failure ?? (state.isFinished ? "Fertig" : state.phase))
-            .font(.caption)
-            .foregroundStyle(state.failure == nil ? (tint ?? Color.secondary) : Color.orange)
+            .font(font.weight(.medium))
+            .foregroundStyle(state.failure == nil ? (tint ?? Color.primary) : Color.orange)
             .lineLimit(1)
     }
 }
 
-/// The lock screen and the Notification Center banner.
+/// The lock screen, the Notification Center banner, and — scaled up — StandBy.
+///
+/// What is on it, and what deliberately is not: the state, always; the
+/// question and the answer, only to someone who has unlocked the phone.
+/// `privacySensitive()` is the system's own answer to that, and it is the
+/// right one here because JARVIS reads messages, calendars and files aloud.
+/// Anyone standing near a phone on a charging stand would otherwise read them
+/// too — and StandBy is exactly that situation, all evening.
 private struct LockScreenView: View {
     let context: ActivityViewContext<JarvisActivityAttributes>
 
@@ -71,34 +94,31 @@ private struct LockScreenView: View {
     private var quiet: Color { ActivityPalette.secondary(context.attributes.background) }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            StatusGlyph(finished: context.state.isFinished,
-                        failed: context.state.failure != nil, tint: ink)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(context.attributes.prompt)
-                    .font(.footnote.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(quiet)
-                // The answer is the reason to look at the screen, so it gets
-                // the size — until there is one, the phase stands in for it.
-                if context.state.replyExcerpt.isEmpty {
-                    PhaseLine(state: context.state, tint: ink)
-                        .font(.callout)
-                } else {
+        HStack(alignment: .center, spacing: 12) {
+            Mark(state: context.state, tint: ink, size: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                PhaseLine(state: context.state, tint: ink, font: .subheadline)
+                if !context.attributes.prompt.isEmpty {
+                    Text(context.attributes.prompt)
+                        .font(.footnote)
+                        .foregroundStyle(quiet)
+                        .lineLimit(1)
+                        .privacySensitive()
+                }
+                if !context.state.replyExcerpt.isEmpty {
                     Text(context.state.replyExcerpt)
-                        .font(.callout)
-                        .foregroundStyle(ink)
-                        .lineLimit(4)
-                    PhaseLine(state: context.state, tint: quiet)
+                        .font(.footnote)
+                        .foregroundStyle(quiet)
+                        .lineLimit(2)
+                        .privacySensitive()
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
-        // The lock screen wears the colour the user chose in the app, so the
-        // two read as one thing. The Dynamic Island deliberately does not:
-        // it is a hole in the display, and a coloured one looks like a bug.
+        // Concentric with the banner's own corner, per `live-activities.md ›
+        // Creating Live Activity layouts`, rather than a flat box of padding.
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
         .activityBackgroundTint(ground)
         .activitySystemActionForegroundColor(ink)
     }
@@ -111,8 +131,7 @@ struct JarvisLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    StatusGlyph(finished: context.state.isFinished,
-                                failed: context.state.failure != nil)
+                    Mark(state: context.state, size: 20)
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -120,47 +139,48 @@ struct JarvisLiveActivity: Widget {
                         .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    // Expanded means the user is holding it open, so the
+                    // question may show — still redacted while locked.
+                    if !context.attributes.prompt.isEmpty {
                         Text(context.attributes.prompt)
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        if !context.state.replyExcerpt.isEmpty {
-                            Text(context.state.replyExcerpt)
-                                .font(.callout)
-                                .lineLimit(3)
-                        }
+                            .lineLimit(2)
+                            .privacySensitive()
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } compactLeading: {
-                StatusGlyph(finished: context.state.isFinished,
-                            failed: context.state.failure != nil)
-                    .frame(width: 18, height: 18)
+                Mark(state: context.state, size: 16)
             } compactTrailing: {
-                // Compact has room for a word, not a sentence. The first one
-                // of the phase is the one that carries it: "Ich denke nach"
-                // reads as "denke", which is exactly what a glance needs.
-                Text(compactWord(for: context.state))
-                    .font(.caption2)
-                    .lineLimit(1)
+                // A dot, not a word. The old version cut the phase down to its
+                // first verb — "denke", "suche" — which is a fragment of German
+                // sitting in the notch, and the single loudest thing about the
+                // old design. State is all the compact presentation owes you;
+                // the words are two millimetres away in the expanded view.
+                StateDot(state: context.state)
             } minimal: {
-                StatusGlyph(finished: context.state.isFinished,
-                            failed: context.state.failure != nil)
-                    .frame(width: 16, height: 16)
+                Mark(state: context.state, size: 16)
             }
             .keylineTint(context.state.failure == nil ? Color.accentColor : Color.orange)
         }
     }
+}
 
-    private func compactWord(for state: JarvisActivityAttributes.ContentState) -> String {
-        if state.failure != nil { return "Fehler" }
-        if state.isFinished { return "fertig" }
-        // Drop a leading "Ich " so the verb survives the truncation.
-        let phase = state.phase.hasPrefix("Ich ")
-            ? String(state.phase.dropFirst(4))
-            : state.phase
-        return String(phase.split(separator: " ").first ?? "läuft")
+/// Running, done, or broken — in six points of colour and nothing else.
+private struct StateDot: View {
+    let state: JarvisActivityAttributes.ContentState
+
+    private var colour: Color {
+        if state.failure != nil { return .orange }
+        return state.isFinished ? .secondary : .accentColor
+    }
+
+    var body: some View {
+        Circle()
+            .fill(colour)
+            .frame(width: 6, height: 6)
+            .accessibilityLabel(Text(state.spokenStatus))
     }
 }
 

@@ -7,6 +7,9 @@ struct ContentView: View {
     @FocusState private var typingFocused: Bool
     @State private var showingFiles = false
     @State private var showingHistory = false
+    /// How far the drawer has been dragged back towards its edge, so the panel
+    /// follows the finger instead of waiting for it to let go.
+    @State private var historyDrag: CGFloat = 0
     @State private var runsExpanded = false
     @State private var openStandinID: String?
     @State private var voiceControlIsVisible = true
@@ -21,6 +24,24 @@ struct ContentView: View {
 
     private var ink: Color {
         model.backgroundChoice.foregroundColor
+    }
+
+    /// Wide enough for a title and a line of preview, narrow enough that the
+    /// conversation stays visible behind it — the drawer is a way back into a
+    /// chat, not a screen of its own.
+    private var historyWidth: CGFloat {
+        #if os(macOS)
+        320
+        #else
+        300
+        #endif
+    }
+
+    private func setHistory(_ open: Bool) {
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            showingHistory = open
+            historyDrag = 0
+        }
     }
 
     var body: some View {
@@ -127,14 +148,49 @@ struct ContentView: View {
             }
         }
         #endif
+        // The history is a drawer over the conversation, not a screen that
+        // replaces it. A sheet made picking an old chat feel like leaving the
+        // current one; sliding a panel in from the edge keeps both in view and
+        // makes the way back obvious — the conversation is right there behind
+        // it. Same gesture on both platforms, because it is the same idea.
+        .overlay {
+            if showingHistory {
+                Color.black
+                    .opacity(0.34 * (1 - min(1, -historyDrag / historyWidth)))
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { setHistory(false) }
+                    .transition(.opacity)
+                    .accessibilityLabel("Verlauf schließen")
+                    .accessibilityAddTraits(.isButton)
+            }
+        }
+        .overlay(alignment: .leading) {
+            if showingHistory {
+                ChatSidebar(width: historyWidth, close: { setHistory(false) })
+                    .environmentObject(model)
+                    .frame(width: historyWidth)
+                    .offset(x: historyDrag)
+                    .transition(.move(edge: .leading))
+                    .gesture(
+                        DragGesture(minimumDistance: 8)
+                            .onChanged { value in
+                                // Only backwards: dragging further open would
+                                // tear the panel off its edge.
+                                historyDrag = min(0, value.translation.width)
+                            }
+                            .onEnded { value in
+                                let thrown = value.predictedEndTranslation.width < -historyWidth / 2
+                                setHistory(!thrown)
+                            }
+                    )
+            }
+        }
         .sheet(isPresented: $model.showingSettings) {
             SettingsView().environmentObject(model)
         }
         .sheet(isPresented: $showingFiles) {
             FilesView().environmentObject(model)
-        }
-        .sheet(isPresented: $showingHistory) {
-            ChatHistoryView().environmentObject(model)
         }
         .task {
             await model.setVoiceForeground(true)
@@ -524,7 +580,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Mac wecken")
             }
-            Button { showingHistory = true } label: {
+            Button { setHistory(!showingHistory) } label: {
                 Image(systemName: "clock.arrow.circlepath")
                     .frame(width: 34, height: 34)
                     .background(Circle().fill(ink.opacity(0.08)))
@@ -770,90 +826,147 @@ private struct VoiceControlFramePreferenceKey: PreferenceKey {
     }
 }
 
-private struct ChatHistoryView: View {
+/// The conversation list, as a panel that slides in over the chat.
+///
+/// It replaced a sheet. A sheet covers the conversation and reads as leaving
+/// it; this sits beside it, so switching chats feels like turning a page
+/// rather than closing a door.
+///
+/// It wears the background the user picked, not a system material. The first
+/// version used `.regularMaterial` — correct by `materials.md`, which puts
+/// translucency on the floating functional layer — and it came out as a pale
+/// slab against a black app, because the material follows the system
+/// appearance and the app follows its own setting. The chosen colour applies
+/// everywhere in this app, so the panel separates itself with a hairline and
+/// a lifted tint instead.
+private struct ChatSidebar: View {
+    let width: CGFloat
+    let close: () -> Void
+
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
     @State private var conversationToDelete: ChatConversation?
 
+    private var ground: Color { model.backgroundChoice.color }
+    private var ink: Color { model.backgroundChoice.foregroundColor }
+
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            header
+            Rectangle().fill(ink.opacity(0.12)).frame(height: 0.5)
             List(model.conversations) { conversation in
-                Button {
-                    model.selectConversation(conversation.id)
-                    dismiss()
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: conversation.id == model.conversation ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
-                            .foregroundStyle(conversation.id == model.conversation ? Color.accentColor : .secondary)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(conversation.title)
-                                .font(model.appFont(.body, weight: .medium))
-                                .lineLimit(1)
-                            if let preview = conversation.messages.last(where: { $0.role != .system })?.text {
-                                Text(preview)
-                                    .font(model.appFont(.caption))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
+                row(for: conversation)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            conversationToDelete = conversation
+                        } label: {
+                            Label("Löschen", systemImage: "trash")
                         }
-                        Spacer()
-                        Text(conversation.updatedAt, style: .relative)
-                            .font(model.appFont(.caption2))
-                            .foregroundStyle(.tertiary)
                     }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isWorking)
-                .swipeActions {
-                    Button(role: .destructive) {
-                        conversationToDelete = conversation
-                    } label: {
-                        Label("Löschen", systemImage: "trash")
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            conversationToDelete = conversation
+                        } label: {
+                            Label("Chat löschen", systemImage: "trash")
+                        }
                     }
-                }
-                .contextMenu {
-                    Button(role: .destructive) {
-                        conversationToDelete = conversation
-                    } label: {
-                        Label("Chat löschen", systemImage: "trash")
-                    }
-                }
             }
-            .navigationTitle("Chatverlauf")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Schließen") { dismiss() }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        model.startNewConversation()
-                        dismiss()
-                    } label: {
-                        Label("Neuer Chat", systemImage: "square.and.pencil")
-                    }
-                    .disabled(model.isWorking)
-                }
-            }
-            .alert("Chat löschen?", isPresented: Binding(
-                get: { conversationToDelete != nil },
-                set: { if !$0 { conversationToDelete = nil } }
-            )) {
-                Button("Abbrechen", role: .cancel) { conversationToDelete = nil }
-                Button("Löschen", role: .destructive) {
-                    if let conversationToDelete {
-                        model.deleteConversation(conversationToDelete.id)
-                    }
-                    conversationToDelete = nil
-                }
-            } message: {
-                Text("Der lokale Verlauf wird von diesem Gerät entfernt.")
-            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
-        #if os(macOS)
-        .frame(minWidth: 560, minHeight: 520)
-        #endif
+        .frame(width: width)
+        .frame(maxHeight: .infinity)
+        // The ground, lifted a touch so the panel reads as being in front of
+        // the conversation rather than a hole cut into it.
+        .background(ground)
+        .background(ink.opacity(0.06))
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(ink.opacity(0.14)).frame(width: 0.5)
+        }
+        .foregroundStyle(ink)
+        .ignoresSafeArea(edges: .bottom)
+        .alert("Chat löschen?", isPresented: Binding(
+            get: { conversationToDelete != nil },
+            set: { if !$0 { conversationToDelete = nil } }
+        )) {
+            Button("Abbrechen", role: .cancel) { conversationToDelete = nil }
+            Button("Löschen", role: .destructive) {
+                if let conversationToDelete {
+                    model.deleteConversation(conversationToDelete.id)
+                }
+                conversationToDelete = nil
+            }
+        } message: {
+            Text("Der Chat wird dauerhaft entfernt.")
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("Verlauf")
+                .font(model.appFont(.headline, weight: .semibold))
+                .foregroundStyle(ink)
+            Spacer(minLength: 0)
+            Button {
+                model.startNewConversation()
+                close()
+            } label: {
+                Image(systemName: "square.and.pencil")
+            }
+            .disabled(model.isWorking)
+            .help("Neuer Chat")
+            .accessibilityLabel("Neuer Chat")
+            Button(action: close) {
+                Image(systemName: "sidebar.leading")
+            }
+            .help("Verlauf schließen")
+            .accessibilityLabel("Verlauf schließen")
+        }
+        .buttonStyle(.plain)
+        // 44 pt is the touch target `accessibility.md` asks for, and the
+        // icons alone are nowhere near it.
+        .frame(minHeight: 44)
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    private func row(for conversation: ChatConversation) -> some View {
+        let isCurrent = conversation.id == model.conversation
+        return Button {
+            model.selectConversation(conversation.id)
+            close()
+        } label: {
+            HStack(spacing: 10) {
+                // The current chat is marked by a bar and by weight, not by
+                // colour alone — `accessibility.md` rules that out.
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(isCurrent ? Color.accentColor : Color.clear)
+                    .frame(width: 3, height: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(conversation.title)
+                        .font(model.appFont(.subheadline, weight: isCurrent ? .semibold : .regular))
+                        .foregroundStyle(ink)
+                        .lineLimit(1)
+                    if let preview = conversation.messages.last(where: { $0.role != .system })?.text {
+                        Text(preview)
+                            .font(model.appFont(.caption))
+                            .foregroundStyle(ink.opacity(0.6))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                Text(conversation.updatedAt, style: .relative)
+                    .font(model.appFont(.caption2))
+                    .foregroundStyle(ink.opacity(0.45))
+                    .lineLimit(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isWorking)
+        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
     }
 }
 
