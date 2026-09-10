@@ -138,8 +138,8 @@ API_PORT = int(os.environ.get("JARVIS_HERMES_API_PORT", "8642"))
 API_WAIT_SECONDS = 45.0
 # Shared with jarvis-chat-standin.py: both may decide a restart is due within
 # the same minute, and two `kickstart -k` on top of each other kill the
-# gateway the first one just started.
-RESTART_COOLDOWN_SECONDS = 300.0
+# gateway the first one just started. The poller owns the cooldown; this side
+# only writes the stamp while it is trying, and clears it when it gives up.
 RESTART_STAMP = Path(os.environ.get("JARVIS_RESTART_STAMP",
                                     Path.home() / ".hermes/jarvis-gateway-restart.stamp"))
 
@@ -175,22 +175,45 @@ def await_new_api(before, seconds: float) -> bool:
     `before` is None when lsof could not answer at all; there is nothing to
     compare against then, so any listener counts and the caller is no worse
     off than before this check existed.
+
+    Seeing the port empty at any point settles it on its own: the old listener
+    is provably gone, so whoever holds it next is the replacement even if the
+    kernel handed it the same pid. Without that, pid reuse reads as "nothing
+    changed" and costs a second, pointless restart.
     """
     deadline = time.time() + seconds
+    released = False
     while time.time() < deadline:
         now_pids = api_listeners()
         if now_pids is None:
             return True
-        if now_pids and (before is None or now_pids - before):
+        if not now_pids:
+            released = True
+        elif released or before is None or now_pids - before:
             return True
         time.sleep(1.0)
     return False
 
 
 def note_restart_request() -> None:
+    """Tell the poller a restart is in flight, so it does not add a second."""
     try:
         RESTART_STAMP.parent.mkdir(parents=True, exist_ok=True)
         RESTART_STAMP.write_text(f"{time.time()} 1")
+    except OSError:
+        pass
+
+
+def clear_restart_claim() -> None:
+    """Hand the problem back after giving up.
+
+    The stamp exists to stop two restarts landing on top of each other. Once
+    this script has tried twice and failed, holding it for the rest of the
+    cooldown only stops the minute-by-minute poller from attempting the repair
+    that is now its job.
+    """
+    try:
+        RESTART_STAMP.unlink()
     except OSError:
         pass
 
@@ -235,7 +258,10 @@ def restart_gateway() -> bool:
                 except (OSError, subprocess.SubprocessError):
                     return False
                 note_restart_request()
-                return await_new_api(before, API_WAIT_SECONDS)
+                if await_new_api(before, API_WAIT_SECONDS):
+                    return True
+                clear_restart_claim()
+                return False
         except (OSError, subprocess.SubprocessError):
             pass
         # Fall through: an uninstalled or renamed service is a reason to try

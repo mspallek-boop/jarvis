@@ -106,6 +106,11 @@ MAX_LOG_READ = 2 * 1024 * 1024
 # interrupts a live conversation once a minute.
 RESTART_COOLDOWN_SECONDS = 300.0
 MAX_RESTART_ATTEMPTS = 3
+# Giving up has to expire too. Three failures mean this minute's problem is
+# not one a restart solves, not that the machine may never be repaired again —
+# without this an outage that becomes fixable later stays broken until someone
+# notices by hand.
+RESTART_GIVEUP_SECONDS = 3600.0
 RESTART_STAMP = Path(os.environ.get("JARVIS_RESTART_STAMP",
                                     HOME / ".hermes/jarvis-gateway-restart.stamp"))
 
@@ -621,13 +626,24 @@ def cmd_note(args: argparse.Namespace) -> int:
 # message: repr("Wie geht's?") comes out double-quoted. Matching only `msg='`
 # silently dropped every German message containing an apostrophe — "geht's",
 # "gibt's", "hab's" — which is most of them. The backreference accepts either
-# quote, and the greedy body runs to the *last* ` reply_to_id=` so the same
-# text inside a message cannot cut the gist short. `user=.*?` is non-greedy
-# because a WhatsApp push name contains spaces ("Marlon Spallek").
+# quote. `user=.*?` is non-greedy because a WhatsApp push name contains spaces
+# ("Marlon Spallek").
+#
+# The body is greedy and the tail is spelled out to the end of the record.
+# Greedy alone would stop at any ` reply_to_id=` the sender typed into their
+# own message; requiring `reply_to_id=<token> reply_to_text=` after it means
+# the split has to line up with the record the gateway actually wrote, and the
+# real terminator — being last — is the one greedy prefers.
 INBOUND_RE = re.compile(
     r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(?P<ms>\d{1,6}) .*?"
     r"inbound message: platform=whatsapp user=.*? chat=(?P<chat>\S+) "
-    r"msg=(?P<q>[\'\"])(?P<msg>.*)(?P=q) reply_to_id=")
+    r"msg=(?P<q>[\'\"])(?P<msg>.*)(?P=q) reply_to_id=\S+ reply_to_text=")
+# A chat id is digits and a known domain. The push name is logged unsanitised,
+# so a contact who can get a newline into theirs could in principle write a
+# second line that reads like a record of its own. It would still have to name
+# a chat that belongs to a running stand-in, and this keeps anything that is
+# not shaped like a WhatsApp id out of that comparison entirely.
+CHAT_ID_RE = re.compile(r"^\d{5,20}@(?:s\.whatsapp\.net|lid)$")
 
 
 def log_time(text: str, millis: str = "0") -> float:
@@ -711,7 +727,10 @@ def scan_gateway_log(state: dict, now: float) -> bool:
         match = INBOUND_RE.search(line)
         if not match:
             continue
-        key = by_alias.get(bare(match.group("chat")))
+        chat = match.group("chat")
+        if not CHAT_ID_RE.match(chat):
+            continue        # not a shape WhatsApp writes
+        key = by_alias.get(bare(chat))
         if key is None:
             continue        # not a stand-in, or an ambiguous alias
         standin = state["standins"][key]
@@ -720,7 +739,12 @@ def scan_gateway_log(state: dict, now: float) -> bool:
             continue        # older than this stand-in: not its conversation
         gist = " ".join(match.group("msg").split())[:MAX_GIST_CHARS]
         if not gist or gist.startswith(OWNER_PREFIX):
-            continue        # the user's own message in that chat is not news
+            # Known and deliberately narrow: the log carries no sender field,
+            # only this prefix, so a contact who opens a message with those
+            # exact words is dropped with it. Counting the user's own messages
+            # as the contact's would happen in every stand-in; this costs one
+            # crafted message.
+            continue
         if any(item.get("gist") == gist and item.get("at") == at
                for item in standin.get("history") or []):
             continue        # the very same log line, re-read after a reset
@@ -827,6 +851,8 @@ def ensure_api_up() -> None:
     when, attempts = read_restart_stamp()
     if now - when < RESTART_COOLDOWN_SECONDS:
         return
+    if now - when >= RESTART_GIVEUP_SECONDS:
+        attempts = 0        # a new outage, not the old one
     if attempts >= MAX_RESTART_ATTEMPTS:
         print(f"Hermes-API auf {API_PORT} bleibt tot — nach {attempts} Versuchen "
               f"kein weiterer Neustart.", file=sys.stderr)

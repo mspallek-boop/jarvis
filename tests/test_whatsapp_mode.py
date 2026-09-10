@@ -327,3 +327,42 @@ def test_a_refused_kickstart_still_tries_the_cli(mode, monkeypatch, tmp_path):
     real = [c for c in calls if c and c[0] != "lsof"]
     assert real[0][0] == "launchctl"
     assert real[1][1:] == ["gateway", "restart"]
+
+
+def test_a_port_that_was_released_counts_as_a_new_listener(mode, monkeypatch, tmp_path):
+    """Pid reuse must not read as "nothing changed".
+
+    Once the port has been seen empty the old listener is provably gone, so
+    whoever holds it next is the replacement even with the same pid — without
+    this, a recycled pid costs a second, pointless restart.
+    """
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    monkeypatch.setattr(mode, "RESTART_STAMP", tmp_path / "restart.stamp")
+    # Same pid throughout, but the port goes away in between.
+    seen = {"n": 0}
+
+    def pids(_kicks):
+        seen["n"] += 1
+        return "" if seen["n"] == 2 else "111\n"
+
+    calls = port_probe(mode, monkeypatch, pids)
+    assert mode._real_restart_gateway() is True
+    kicks = [c for c in calls["argv"] if c and c[0] == "launchctl"]
+    assert len(kicks) == 1
+
+
+def test_giving_up_hands_the_stamp_back(mode, monkeypatch, tmp_path):
+    """A failed restart must not block the poller's repair for the cooldown."""
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    stamp = tmp_path / "restart.stamp"
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    monkeypatch.setattr(mode, "RESTART_STAMP", stamp)
+    port_probe(mode, monkeypatch, lambda _k: "111\n")
+
+    assert mode._real_restart_gateway() is False
+    assert not stamp.exists()

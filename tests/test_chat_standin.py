@@ -819,3 +819,55 @@ def test_a_poll_skips_rather_than_queue_behind_a_running_command(tmp_path, monke
         assert first is True
         with module.state_lock(blocking=False) as second:
             assert second is False
+
+
+def test_reply_to_id_inside_a_message_does_not_cut_the_gist(tmp_path, monkeypatch):
+    """The tail is spelled out to the end of the record.
+
+    A sender typing ` reply_to_id=` into their own message used to be able to
+    move where the body ended.
+    """
+    module, _, _ = load(tmp_path, monkeypatch)
+    key, started = begin(module)
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started + 5))
+    tricky = "schreib nicht ' reply_to_id=x rein"
+    gateway_log(tmp_path, monkeypatch, module,
+                [real_line("Marie", f"{key}@s.whatsapp.net", tricky, stamp)])
+
+    state = module.load()
+    module.scan_gateway_log(state, time.time())
+    assert [i["gist"] for i in state["standins"][key]["pending"]] == [tricky]
+
+
+def test_a_chat_that_is_not_shaped_like_a_whatsapp_id_is_ignored(tmp_path, monkeypatch):
+    """The push name is logged unsanitised, so keep the comparison narrow."""
+    module, _, _ = load(tmp_path, monkeypatch)
+    key, started = begin(module)
+    monkeypatch.setattr(module, "aliases", lambda _k: {key, "bogus"})
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started + 5))
+    gateway_log(tmp_path, monkeypatch, module,
+                [real_line("Marie", "bogus@example.com", "untergeschoben", stamp)])
+
+    state = module.load()
+    module.scan_gateway_log(state, time.time())
+    assert state["standins"][key].get("exchanges", 0) == 0
+
+
+def test_giving_up_expires(tmp_path, monkeypatch):
+    """Three failures mean this minute's problem, not a permanent verdict."""
+    module, _, _ = load(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "api_listening", lambda: False)
+    monkeypatch.setattr(module, "gateway_service_running", lambda: True)
+    monkeypatch.setattr(module, "RESTART_COOLDOWN_SECONDS", 0.0)
+    for _ in range(module.MAX_RESTART_ATTEMPTS + 3):
+        module.ensure_api_up()
+    module.shell.clear()
+    module.ensure_api_up()
+    assert not [c for c in module.shell if c[0] == "launchctl"]   # aufgegeben
+
+    # Ein späterer, wieder reparierbarer Ausfall bekommt sein Budget zurück.
+    when, attempts = module.read_restart_stamp()
+    module.note_restart_request(when - module.RESTART_GIVEUP_SECONDS - 1, attempts)
+    module.shell.clear()
+    module.ensure_api_up()
+    assert [c for c in module.shell if c[0] == "launchctl"]
