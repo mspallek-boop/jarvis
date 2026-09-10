@@ -501,11 +501,20 @@ class VoicePipelineServer:
                 yield from self._macos_tts_chunks(text, timing)
                 return
             raise RuntimeError("ElevenLabs API key not found")
+        # The env wins over the file. server.yaml is copied from the example
+        # and its voice_id is a placeholder until someone remembers to fill it
+        # in; the key next to it in ~/.hermes/.env is the value that is
+        # actually kept current. Reading the placeholder sends every request to
+        # a voice that does not exist.
+        voice_id = (os.environ.get("ELEVENLABS_VOICE_ID")
+                    or os.environ.get("ELEVEN_VOICE_ID") or "").strip()
+        if not voice_id or voice_id.startswith("YOUR_"):
+            voice_id = str(voice.get("voice_id") or "").strip()
         timing.tts_model = voice["model"]
-        timing.voice_id = voice["voice_id"]
+        timing.voice_id = voice_id
         timing.tts_request_start_monotonic = timing.tts_request_start_monotonic or time.perf_counter()
         record_usage(tts_chars=len(text))
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice['voice_id']}/stream"
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
         params = {"output_format": voice.get("output_format", "pcm_16000")}
         payload = {
             "text": text,
@@ -515,21 +524,36 @@ class VoicePipelineServer:
                 "style": 0.10, "use_speaker_boost": True,
             },
         }
-        response = requests.post(
-            url, params=params,
-            headers={"xi-api-key": key, "Accept": "application/octet-stream", "Content-Type": "application/json"},
-            json=payload, stream=True, timeout=120,
-        )
+        local_voice_available = (str(voice.get("fallback", "")).lower() == "macos"
+                                 and bool(shutil.which("say")))
+        try:
+            response = requests.post(
+                url, params=params,
+                headers={"xi-api-key": key, "Accept": "application/octet-stream", "Content-Type": "application/json"},
+                json=payload, stream=True, timeout=120,
+            )
+        except requests.RequestException as exc:
+            # A dropped connection is no different to the listener than a
+            # refused one: nothing is said.
+            if local_voice_available:
+                print(f"ElevenLabs unreachable ({type(exc).__name__}) — "
+                      f"speaking with the local macOS voice", flush=True)
+                yield from self._macos_tts_chunks(text, timing)
+                return
+            raise RuntimeError(f"ElevenLabs unreachable: {exc}") from exc
         if response.status_code >= 400:
             status, detail = response.status_code, response.text[:1000]
             response.close()
-            # An exhausted free-tier quota answers 401, a rate limit 429 and a
-            # voice the plan may not use 402. The key is present and valid, so
-            # the "no key" branch above never fires — without this the whole
-            # turn goes silent for the rest of the billing month.
-            if status in (401, 402, 429) and str(voice.get("fallback", "")).lower() == "macos" \
-                    and shutil.which("say"):
-                print(f"ElevenLabs HTTP {status} — speaking with the local macOS voice", flush=True)
+            # Any failure, not a list of them. This used to name 401, 402 and
+            # 429 — an exhausted quota, a plan limit, a rate limit — and a
+            # placeholder voice_id answering 404 fell straight through to the
+            # raise, so the turn died and JARVIS went silent on both devices
+            # while the fallback sat there configured and unused. Whatever
+            # ElevenLabs refuses, a local voice is better than no voice: the
+            # user notices silence, not which engine spoke.
+            if local_voice_available:
+                print(f"ElevenLabs HTTP {status} ({detail[:120]}) — "
+                      f"speaking with the local macOS voice", flush=True)
                 yield from self._macos_tts_chunks(text, timing)
                 return
             raise RuntimeError(f"ElevenLabs HTTP {status}: {detail}")
