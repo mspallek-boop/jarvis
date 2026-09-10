@@ -915,7 +915,14 @@ final class AppModel: ObservableObject {
                 self?.notificationBanner = nil
             }
             if speaksReplies, !isWorking, !speech.isSpeaking, voiceForeground {
-                speech.speak(newItems.count == 1 ? newItems[0].line : "Du hast \(newItems.count) neue Benachrichtigungen.")
+                // With the client, in his own voice. Without it `speak` falls
+                // through to the system synthesiser, which reads at the chosen
+                // playback rate — so a reply that arrived while the app was
+                // closed was announced by a stranger, at 1.25x, the moment it
+                // opened. The client is already in hand here; not passing it
+                // was the whole bug.
+                speech.speak(newItems.count == 1 ? newItems[0].line : "Du hast \(newItems.count) neue Benachrichtigungen.",
+                             neuralClient: client)
             }
             do {
                 try await client.markNotificationsRead(through: response.latest)

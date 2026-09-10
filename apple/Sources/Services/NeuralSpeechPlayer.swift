@@ -80,9 +80,7 @@ final class NeuralSpeechPlayer {
         player.stop()
         engine.stop()
         #if os(iOS)
-        if managesAudioSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        if managesAudioSession { JarvisAudioSession.release() }
         #endif
     }
 

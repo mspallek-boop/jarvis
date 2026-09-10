@@ -1,6 +1,29 @@
 import AVFoundation
 import Foundation
 import Speech
+#if canImport(UIKit)
+import UIKit
+#endif
+
+#if os(iOS)
+/// One place decides when the audio session may be handed back.
+///
+/// In the foreground, giving it up is good manners: whatever was playing
+/// before resumes. In the background it is fatal. The active session is the
+/// only reason iOS lets the app go on running at all, so releasing it there
+/// ends the conversation and suspends the process — which is exactly what it
+/// looked like when JARVIS fell silent the moment the app was swiped away.
+///
+/// He is meant to keep talking and listening from the Lock Screen and the
+/// Dynamic Island, so backgrounded means keep it.
+@MainActor
+enum JarvisAudioSession {
+    static func release() {
+        guard UIApplication.shared.applicationState == .active else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+#endif
 
 struct SpeechVoiceOption: Identifiable {
     let id: String
@@ -207,7 +230,8 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         guard muted != microphoneMuted else { return }
         microphoneMuted = muted
         UserDefaults.standard.set(muted, forKey: "microphoneMuted")
-        if muted { finishAudio() }
+        // Muting is the user saying "stop listening", so the session goes back.
+        if muted { finishAudio(releasingSession: true) }
     }
 
     func start(stoppingSpeech: Bool = true) async {
@@ -658,9 +682,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
             self.activeUtterance = nil
             self.isSpeaking = false
             #if os(iOS)
-            if !self.listensWhileSpeaking {
-                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            }
+            if !self.listensWhileSpeaking { JarvisAudioSession.release() }
             #endif
             self.outputFinished()
         }
@@ -694,7 +716,15 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         }
     }
 
-    private func finishAudio() {
+    /// Tear the capture down. The audio session is a separate question.
+    ///
+    /// This runs between every two turns — before each answer is spoken, on
+    /// every idle timeout. Handing the session back each time means the next
+    /// turn pays for the whole warm-up again, and the voice processing unit
+    /// takes a beat or two to converge: that beat is the "microphone is dead
+    /// for the first few seconds" on the iPhone. So the session is kept and
+    /// only given up when the user actually ends voice interaction.
+    private func finishAudio(releasingSession: Bool = false) {
         captureID = UUID()
         segmentID = UUID()
         idleTask?.cancel()
@@ -713,7 +743,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         committedTranscript = ""
         isListening = false
         #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if releasingSession { JarvisAudioSession.release() }
         #endif
     }
 

@@ -28,11 +28,15 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>JARVIS verbindet sich privat mit Hermes auf deinem Mac.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>JARVIS nutzt das Mikrofon nur während du sprichst.</string>
+	<string>JARVIS hört zu, während du mit ihm sprichst — auch wenn die App im Hintergrund ist oder das iPhone gesperrt.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>JARVIS wandelt deine Sprache lokal über Apples Spracherkennung in Text um.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
