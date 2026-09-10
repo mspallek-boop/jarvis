@@ -66,6 +66,11 @@ RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 # another surface's turn. A caller may only ever cancel its own run.
 CLIENT_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 MAX_BODY_BYTES = 64 * 1024
+# An upload is a body too, and 64 KB is smaller than any photograph. The two
+# limits sat next to each other contradicting one another: `MAX_UPLOAD_BYTES`
+# said ten megabytes were welcome and `_body` refused everything past sixty-four
+# kilobytes, so pasting an image answered "Ungültige Anfragegröße" and no image
+# ever arrived. Base64 costs a third on top, plus room for the JSON around it.
 # The gateway applies `limit` to a SUBSTRING search and only then filters for
 # an exact title, so the wanted row can sit behind newer near-matches. Page
 # through a bounded number of them rather than trusting one request.
@@ -252,6 +257,7 @@ def _elevenlabs_payload(text: str, config) -> dict:
 
 UPLOAD_DIR = Path.home() / ".hermes" / "jarvis-uploads"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_BODY_BYTES = MAX_UPLOAD_BYTES * 4 // 3 + 4096
 # Recognised by content, never by a client-supplied name or type. A caller must
 # not be able to talk the bridge into writing an executable or a .env.
 IMAGE_MAGIC = (
@@ -1649,12 +1655,12 @@ class JarvisHandler(BaseHTTPRequestHandler):
             while chunk := source.read(1024 * 1024):
                 self.wfile.write(chunk)
 
-    def _body(self) -> dict:
+    def _body(self, limit: int = MAX_BODY_BYTES) -> dict:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("Ungültige Anfrage") from exc
-        if length <= 0 or length > MAX_BODY_BYTES:
+        if length <= 0 or length > limit:
             raise ValueError("Ungültige Anfragegröße")
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
@@ -2008,7 +2014,8 @@ class JarvisHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.UNAUTHORIZED, {"error": "Nicht autorisiert"})
             return
         try:
-            body = self._body()
+            body = self._body(limit=MAX_UPLOAD_BODY_BYTES if self.path == "/upload"
+                              else MAX_BODY_BYTES)
             if self.path == "/upload":
                 try:
                     stored = store_upload(body.get("data") or "")

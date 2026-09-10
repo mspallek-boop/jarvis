@@ -188,9 +188,72 @@ private struct StateDot: View {
     }
 }
 
+/// The tile JARVIS keeps on the Home Screen and in StandBy.
+///
+/// StandBy is a phone on a stand, across the room, often in the dark — so this
+/// is a mark, a word, and nothing else. Apple tints StandBy widgets red below
+/// a light threshold (`widgets.md › rendering modes`), which is why the design
+/// is monochrome: a white mark survives being turned red, a coloured one turns
+/// muddy.
+///
+/// It cannot show live state. That needs an App Group between the app and this
+/// extension, and adding one is a provisioning capability rather than a line of
+/// code. A running conversation already has a better home in StandBy anyway:
+/// the Live Activity, which the system scales to fill the screen when tapped.
+/// This tile is the other half — the way in when nothing is running.
+struct JarvisStandByWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "JarvisStandBy", provider: StandByProvider()) { _ in
+            StandByTile()
+                .containerBackground(.black, for: .widget)
+                // Straight into listening, because the point of a phone on a
+                // stand is not having to hold it and tap twice.
+                .widgetURL(URL(string: "jarvis://listen"))
+        }
+        .configurationDisplayName("JARVIS")
+        .description("Tippen, um zu sprechen.")
+        .supportedFamilies([.systemSmall])
+    }
+}
+
+private struct StandByEntry: TimelineEntry {
+    let date: Date
+}
+
+private struct StandByProvider: TimelineProvider {
+    func placeholder(in context: Context) -> StandByEntry { StandByEntry(date: .now) }
+
+    func getSnapshot(in context: Context, completion: @escaping (StandByEntry) -> Void) {
+        completion(StandByEntry(date: .now))
+    }
+
+    /// Nothing here changes on its own, so there is nothing to schedule. A
+    /// widget that reloads for no reason is a widget that costs battery.
+    func getTimeline(in context: Context, completion: @escaping (Timeline<StandByEntry>) -> Void) {
+        completion(Timeline(entries: [StandByEntry(date: .now)], policy: .never))
+    }
+}
+
+private struct StandByTile: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            GridGlyph()
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+            Text("JARVIS")
+                .font(.caption.weight(.semibold))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityLabel("JARVIS öffnen und zuhören")
+    }
+}
+
 @main
 struct JarvisLiveActivityBundle: WidgetBundle {
     var body: some Widget {
         JarvisLiveActivity()
+        JarvisStandByWidget()
     }
 }

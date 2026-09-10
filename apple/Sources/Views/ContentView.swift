@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import PhotosUI
+#endif
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
@@ -10,6 +13,14 @@ struct ContentView: View {
     /// How far the drawer has been dragged back towards its edge, so the panel
     /// follows the finger instead of waiting for it to let go.
     @State private var historyDrag: CGFloat = 0
+    /// The attach button's state. There was no attach button: pasting was the
+    /// only way in, and on the Mac that meant Cmd-V into a view that had to be
+    /// focused for it to be heard. A picture you took has no clipboard step at
+    /// all, so there was no way to send one.
+    @State private var showingImporter = false
+    #if os(iOS)
+    @State private var pickedPhoto: PhotosPickerItem?
+    #endif
     @State private var runsExpanded = false
     @State private var openStandinID: String?
     @State private var voiceControlIsVisible = true
@@ -153,6 +164,25 @@ struct ContentView: View {
         // current one; sliding a panel in from the edge keeps both in view and
         // makes the way back obvious — the conversation is right there behind
         // it. Same gesture on both platforms, because it is the same idea.
+        // The same panel, by the gesture the platform teaches: a drag that
+        // starts at the leading edge. Only when it is closed — while it is
+        // open, the panel's own drag closes it.
+        .overlay(alignment: .leading) {
+            if !showingHistory {
+                Color.clear
+                    .frame(width: 18)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 12)
+                            .onEnded { value in
+                                guard value.translation.width > 40,
+                                      abs(value.translation.height) < 80 else { return }
+                                setHistory(true)
+                            }
+                    )
+            }
+        }
         .overlay {
             if showingHistory {
                 Color.black
@@ -186,6 +216,19 @@ struct ContentView: View {
                     )
             }
         }
+        // The StandBy tile and the Home Screen widget both point here. A phone
+        // on a stand should not need two taps and a look to start talking.
+        .onOpenURL { url in
+            guard url.scheme == "jarvis" else { return }
+            switch url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) {
+            case "listen", "wake":
+                Task {
+                    await model.setVoiceForeground(true)
+                    await model.speech.start()
+                }
+            default: break
+            }
+        }
         .sheet(isPresented: $model.showingSettings) {
             SettingsView().environmentObject(model)
         }
@@ -193,6 +236,11 @@ struct ContentView: View {
             FilesView().environmentObject(model)
         }
         .task {
+            #if os(iOS)
+            // A fresh launch cannot be mid-turn, so anything still showing is
+            // left over from a process that no longer exists.
+            model.tidyLiveActivities()
+            #endif
             await model.setVoiceForeground(true)
             await model.checkConnection()
             #if os(macOS)
@@ -205,6 +253,10 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) {
             if scenePhase == .background {
+                #if os(iOS)
+                // Nothing running means nothing belongs on the lock screen.
+                model.tidyLiveActivities()
+                #endif
                 Task { await model.setVoiceForeground(false) }
             } else if scenePhase == .active {
                 Task {
@@ -548,6 +600,51 @@ struct ContentView: View {
         .padding(.horizontal, 24)
     }
 
+    /// One plus, always there, on both platforms.
+    @ViewBuilder
+    private var attachButton: some View {
+        #if os(iOS)
+        PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+            attachGlyph
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Bild anhängen")
+        .onChange(of: pickedPhoto) {
+            guard let pickedPhoto else { return }
+            Task {
+                if let data = try? await pickedPhoto.loadTransferable(type: Data.self) {
+                    await model.attachImage(data)
+                }
+                self.pickedPhoto = nil
+            }
+        }
+        #else
+        Button { showingImporter = true } label: { attachGlyph }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Bild anhängen")
+            .help("Bild anhängen")
+            .fileImporter(isPresented: $showingImporter,
+                          allowedContentTypes: [.png, .jpeg, .gif, .webP, .bmp]) { result in
+                guard case let .success(url) = result else { return }
+                // A file the user picked is reachable only inside this scope.
+                let opened = url.startAccessingSecurityScopedResource()
+                defer { if opened { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else { return }
+                Task { await model.attachImage(data) }
+            }
+        #endif
+    }
+
+    private var attachGlyph: some View {
+        Image(systemName: "plus")
+            .font(model.appFont(.body))
+            .foregroundStyle(ink.opacity(0.7))
+            // 44 points, because a plus is 12 and `accessibility.md` asks for
+            // a target you can actually hit.
+            .frame(width: 40, height: 44)
+            .contentShape(Rectangle())
+    }
+
     private var inputHandle: some View {
         Button {
             withAnimation(.easeInOut(duration: 0.25)) { isTyping.toggle() }
@@ -568,6 +665,16 @@ struct ContentView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            // Leading, because that is the edge the panel comes from and the
+            // edge the swipe starts at. A control that opens something from
+            // the left belongs on the left; on the right it was a guess.
+            Button { setHistory(!showingHistory) } label: {
+                Image(systemName: "sidebar.leading")
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(ink.opacity(0.08)))
+            }
+            .accessibilityLabel("Chatverlauf")
+            .help("Chatverlauf")
             Text("JARVIS")
                 .font(model.appFont(.caption, weight: .semibold))
                 .tracking(2.4)
@@ -614,12 +721,6 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Mac wecken")
             }
-            Button { setHistory(!showingHistory) } label: {
-                Image(systemName: "clock.arrow.circlepath")
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(ink.opacity(0.08)))
-            }
-            .accessibilityLabel("Chatverlauf")
             Button { showingFiles = true } label: {
                 Image(systemName: "folder")
                     .frame(width: 34, height: 34)
@@ -805,6 +906,7 @@ struct ContentView: View {
                 .accessibilityLabel("JARVIS denkt")
                 .transition(.scale(scale: 0.8).combined(with: .opacity))
             }
+            attachButton
             TextField("Nachricht", text: $model.input, axis: .vertical)
                 .focused($typingFocused)
                 .lineLimit(1...4)

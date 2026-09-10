@@ -25,6 +25,14 @@ struct SettingsView: View {
                     }
                     LabeledContent("Status", value: model.connection.label)
                 }
+                #if os(iOS)
+                Section("Ständer") {
+                    Toggle("Ständer-Modus", isOn: $model.dockModeEnabled)
+                    Text("Für das iPhone in der Ladeschale: JARVIS hört durchgehend zu und antwortet nur auf „Hey JARVIS“. Das Mikrofon bleibt offen, solange die App läuft — auch im Hintergrund und in StandBy. Ohne Ladeschale kostet das spürbar Akku.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                #endif
                 Section("Sprache") {
                     Toggle("Antworten vorlesen", isOn: $model.speaksReplies)
                     Toggle("Natürliche Stimme vom Mac", isOn: Binding(

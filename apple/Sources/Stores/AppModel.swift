@@ -278,6 +278,36 @@ final class AppModel: ObservableObject {
     @Published var showingSettings = false
     @Published var serverURL: String
     @Published var token: String
+    #if os(iOS)
+    /// Take the lock screen back from a process that no longer exists, and
+    /// clear it whenever nothing is running. Called on launch and on the way
+    /// to the background.
+    func tidyLiveActivities() {
+        liveActivity.endIfIdle(hasRunningTurns: !localRuns.isEmpty)
+    }
+
+    /// Dock mode: the phone is on a stand and JARVIS is meant to stay awake.
+    ///
+    /// Two things change while it is on. The microphone is never closed by the
+    /// idle timer or by the background call's silence, so he keeps hearing the
+    /// room. And because a microphone that acts on everything it hears in a
+    /// room is not an assistant but a hazard, he answers only what begins with
+    /// his name.
+    ///
+    /// This is as close to a system wake word as a third-party app can get on
+    /// iOS: only Siri may listen when an app is not running. So this listens
+    /// while the app *is* running — which on a charging stand is the whole
+    /// evening — and the phrase is matched in the transcript rather than by a
+    /// detector.
+    @Published var dockModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(dockModeEnabled, forKey: "dockModeEnabled")
+            Task { await dockModeEnabled ? resumeVoice() : speech.suspend(hangingUp: true) }
+        }
+    }
+
+    #endif
+
     @Published var speaksReplies: Bool {
         didSet {
             UserDefaults.standard.set(speaksReplies, forKey: "speaksReplies")
@@ -619,6 +649,9 @@ final class AppModel: ObservableObject {
         }
         token = KeychainStore.loadToken()
         speaksReplies = UserDefaults.standard.object(forKey: "speaksReplies") as? Bool ?? true
+        #if os(iOS)
+        dockModeEnabled = UserDefaults.standard.bool(forKey: "dockModeEnabled")
+        #endif
         // Every full app launch starts in a fresh conversation. The archived
         // conversations are restored below and remain selectable in history.
         conversation = Self.makeConversationID()
@@ -632,6 +665,25 @@ final class AppModel: ObservableObject {
         restoreChatHistory()
         speech.onUtterance = { [weak self] text in
             guard let self, self.voiceModeEnabled, self.voiceForeground else { return }
+            #if os(iOS)
+            if self.dockModeEnabled {
+                guard let asked = WakePhrase.after(text) else {
+                    // Someone in the room said something that was not to him.
+                    // Listening has to start again by hand: completing an
+                    // utterance tore the capture down.
+                    Task { await self.speech.start(stoppingSpeech: false) }
+                    return
+                }
+                guard !asked.isEmpty else {
+                    // Called by name and nothing else. Answer the summons and
+                    // keep the microphone open for what follows.
+                    Task { await self.speech.start(stoppingSpeech: false) }
+                    return
+                }
+                Task { await self.send(asked) }
+                return
+            }
+            #endif
             Task {
                 // Speaking while a turn runs used to cancel it. A new task is
                 // not a correction: it is added and both run. Cancelling is the
@@ -642,7 +694,15 @@ final class AppModel: ObservableObject {
         }
         // The countdown must not end the microphone mid-turn: while a run is
         // going, silence means the user is listening, not gone.
-        speech.shouldKeepListening = { [weak self] in self?.isWorking ?? false }
+        speech.shouldKeepListening = { [weak self] in
+            guard let self else { return false }
+            #if os(iOS)
+            // On a stand he stays awake; the idle timer is for a phone in a
+            // pocket, not one plugged in and pointed at the room.
+            if self.dockModeEnabled { return true }
+            #endif
+            return self.isWorking
+        }
         speech.onSpeechFinished = { [weak self] in
             Task {
                 await self?.resumeVoice()
@@ -977,6 +1037,8 @@ final class AppModel: ObservableObject {
                     self.lastVoiceActivity = Date()
                     continue
                 }
+                // A stand is a deliberate "stay awake", so nothing hangs up.
+                if self.dockModeEnabled { continue }
                 guard Date().timeIntervalSince(self.lastVoiceActivity) >= Self.backgroundCallGrace
                 else { continue }
                 self.onBackgroundCall = false
@@ -1071,7 +1133,7 @@ final class AppModel: ObservableObject {
         // Only while there *is* a call. An idle app that merely went to the
         // background hands the microphone back, because holding it open for
         // nothing costs battery and lights the recording indicator for no one.
-        if !active, conversationIsLive {
+        if !active, conversationIsLive || dockModeEnabled {
             beginBackgroundCall()
             return
         }

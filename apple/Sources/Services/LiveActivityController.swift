@@ -80,9 +80,35 @@ final class LiveActivityController {
         }
     }
 
-    /// Clears everything — used when the user signs out or the app is reset.
+    /// Clears everything this process started, and anything it did not.
     func endAll() {
         for runID in activities.keys { finish(runID: runID, reply: "") }
+        endOrphans()
+    }
+
+    /// End what is left over from an earlier life of the app.
+    ///
+    /// A Live Activity outliving the process is the point of it — that is what
+    /// keeps the lock screen honest while the phone is asleep. It is also why
+    /// JARVIS was still sitting in the Dynamic Island after the app had been
+    /// swiped away: the turn it belonged to never reached `finish`, and
+    /// nothing else was going to end it.
+    ///
+    /// A fresh process cannot be in the middle of an old turn. So anything
+    /// already running when this one starts belongs to nobody and goes at
+    /// once — no lingering, because there is no longer a result to linger for.
+    func endOrphans() {
+        let mine = Set(activities.values.map(\.id))
+        for activity in Activity<JarvisActivityAttributes>.activities
+        where !mine.contains(activity.id) {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+        }
+    }
+
+    /// Nothing is running, so nothing should be on the lock screen.
+    func endIfIdle(hasRunningTurns: Bool) {
+        guard !hasRunningTurns else { return }
+        endAll()
     }
 
     private func scheduleFlush(runID: String, in delay: TimeInterval) {

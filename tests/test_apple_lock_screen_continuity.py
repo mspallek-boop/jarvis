@@ -47,7 +47,11 @@ def test_returning_to_the_foreground_rechecks_the_connection():
     # without this the stale banner stayed up until the app was killed.
     assert "func resumeFromBackground() async" in APP_MODEL
     start = CONTENT_VIEW.index("onChange(of: scenePhase)")
-    phase_block = CONTENT_VIEW[start:start + 700]
+    # To the next modifier, not a fixed number of characters: a count turns
+    # every added line inside the block into a failing assertion about
+    # something the test does not care about.
+    end = CONTENT_VIEW.index("\n        .", start)
+    phase_block = CONTENT_VIEW[start:end]
     assert "scenePhase == .active" in phase_block
     assert "model.resumeFromBackground()" in phase_block
 

@@ -24,6 +24,16 @@ import Foundation
         precondition(VoiceStageText.withoutPicturePlaceholders(
             "[Bildschirm] bleibt", hasPictures: true) == "[Bildschirm] bleibt")
 
-        print("10 answer rendering cases passed")
+        // Being called by name, as the recogniser actually hears it.
+        precondition(WakePhrase.after("Hey Jarvis, wie spät ist es?") == "wie spät ist es?")
+        precondition(WakePhrase.after("Hey Service, mach das Licht an") == "mach das Licht an")
+        // Groß- und Kleinschreibung sowie Satzzeichen überleben — der Satz geht so an das Modell.
+        precondition(WakePhrase.after("Hey Jarvis: Wie spät ist es?") == "Wie spät ist es?")
+        precondition(WakePhrase.after("Hey Jarvis") == "")            // Anruf ohne Auftrag
+        precondition(WakePhrase.after("Wie spät ist es?") == nil)     // nicht an ihn gerichtet
+        precondition(WakePhrase.after("Sag Jarvis, er soll warten") == nil)  // nur erwähnt
+        precondition(WakePhrase.after("") == nil)
+
+        print("17 answer rendering cases passed")
     }
 }
