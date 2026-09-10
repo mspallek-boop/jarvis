@@ -2,25 +2,20 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-/// The JARVIS mark, drawn as a vector so it stays sharp from an 8-point
-/// Dynamic Island glyph up to the lock screen. Same 3×3 grid as the app icon.
+/// The JARVIS mark: one tile from the app icon's grid, not the whole grid.
+///
+/// The 3×3 version is the app icon and it is right at app-icon size. At the
+/// sixteen points the Dynamic Island gives it, nine rounded squares with gaps
+/// between them stop being a mark and become texture. One tile keeps the
+/// shape language — the same corner curve — and stays a shape at any size,
+/// which is what lets it pulse legibly.
 private struct GridGlyph: View {
     var body: some View {
         GeometryReader { geometry in
             let side = min(geometry.size.width, geometry.size.height)
-            let tile = side / 3.36
-            let gap = tile * 0.18
-            VStack(spacing: gap) {
-                ForEach(0..<3, id: \.self) { _ in
-                    HStack(spacing: gap) {
-                        ForEach(0..<3, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: tile * 0.23, style: .continuous)
-                                .frame(width: tile, height: tile)
-                        }
-                    }
-                }
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+            RoundedRectangle(cornerRadius: side * 0.28, style: .continuous)
+                .frame(width: side, height: side)
+                .frame(width: geometry.size.width, height: geometry.size.height)
         }
     }
 }
@@ -35,8 +30,9 @@ private struct GridGlyph: View {
 /// thing feel loud.
 private struct Mark: View {
     let state: JarvisActivityAttributes.ContentState
-    /// Nil on the Dynamic Island, which is a hole in the display and takes the
-    /// system accent; set on the lock screen, where the app's colour is ground.
+    /// Nil on the Dynamic Island, which is a hole in the display and takes
+    /// white; set on the lock screen, where the app's colour is the ground and
+    /// the mark has to read against it.
     var tint: Color?
     var size: CGFloat = 18
 
@@ -47,10 +43,16 @@ private struct Mark: View {
     private var resting: Bool { state.isFinished || state.failure != nil }
     private var still: Bool { resting || dimmed || reduceMotion }
 
+    /// White, because that is the mark. Only a real failure takes a colour,
+    /// and it takes one because it is a warning and not decoration.
+    private var colour: Color {
+        if state.failure != nil { return .orange }
+        return tint ?? .white
+    }
+
     var body: some View {
         GridGlyph()
-            .foregroundStyle(state.failure != nil ? Color.orange
-                             : (tint ?? (state.isFinished ? Color.secondary : Color.accentColor)))
+            .foregroundStyle(colour)
             .frame(width: size, height: size)
             .opacity(still ? 1 : (breathing ? 1 : 0.5))
             .animation(still ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
@@ -162,7 +164,7 @@ struct JarvisLiveActivity: Widget {
             } minimal: {
                 Mark(state: context.state, size: 16)
             }
-            .keylineTint(context.state.failure == nil ? Color.accentColor : Color.orange)
+            .keylineTint(context.state.failure == nil ? Color.white : Color.orange)
         }
     }
 }
@@ -173,12 +175,14 @@ private struct StateDot: View {
 
     private var colour: Color {
         if state.failure != nil { return .orange }
-        return state.isFinished ? .secondary : .accentColor
+        return .white
     }
 
     var body: some View {
         Circle()
             .fill(colour)
+            // Finished is the same mark, quieter — state without a second hue.
+            .opacity(state.isFinished ? 0.45 : 1)
             .frame(width: 6, height: 6)
             .accessibilityLabel(Text(state.spokenStatus))
     }

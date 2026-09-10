@@ -18,8 +18,12 @@ import UIKit
 /// Dynamic Island, so backgrounded means keep it.
 @MainActor
 enum JarvisAudioSession {
-    static func release() {
-        guard UIApplication.shared.applicationState == .active else { return }
+    /// `force` is hanging up: the call is deliberately over, so the session
+    /// goes back even though the app is in the background. Everything else
+    /// keeps it, because in the background the session is the only reason iOS
+    /// lets the app go on running.
+    static func release(force: Bool = false) {
+        guard force || UIApplication.shared.applicationState == .active else { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
@@ -442,8 +446,8 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         if let text = stop() { onUtterance?(text) }
     }
 
-    func suspend() {
-        finishAudio()
+    func suspend(hangingUp: Bool = false) {
+        finishAudio(releasingSession: hangingUp)
         stopSpeaking()
     }
 
@@ -743,7 +747,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         committedTranscript = ""
         isListening = false
         #if os(iOS)
-        if releasingSession { JarvisAudioSession.release() }
+        if releasingSession { JarvisAudioSession.release(force: true) }
         #endif
     }
 

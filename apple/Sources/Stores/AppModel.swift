@@ -300,6 +300,23 @@ final class AppModel: ObservableObject {
     @Published var downloadedFile: URL?
     @Published private(set) var voiceModeEnabled = true
     private var voiceForeground = false
+    #if os(iOS)
+    /// True while the conversation is being carried on with the app in the
+    /// background — the state a phone call is in when you open another app.
+    private var onBackgroundCall = false
+    private var backgroundCallTask: Task<Void, Never>?
+    private var lastVoiceActivity = Date()
+    /// How long a silence may last before the call is over. Short enough that
+    /// a forgotten conversation does not hold the microphone all afternoon,
+    /// long enough that thinking, or reading something on another screen
+    /// before answering, is not mistaken for hanging up.
+    private static let backgroundCallGrace: TimeInterval = 120
+
+    /// Something is actually going on: he is talking, hearing, or thinking.
+    private var conversationIsLive: Bool {
+        speech.isSpeaking || speech.isListening || isWorking
+    }
+    #endif
     /// Voices the Mac's speech provider offers. Fetched through the bridge so
     /// the provider API key never reaches the app.
     @Published private(set) var availableBridgeVoices: [JarvisAPIClient.BridgeVoice] = []
@@ -941,6 +958,45 @@ final class AppModel: ObservableObject {
         bannerTask?.cancel()
     }
 
+    #if os(iOS)
+    /// Keep the turn alive in the background, and watch for it to end.
+    ///
+    /// Nothing else notices that a backgrounded conversation has gone quiet:
+    /// the idle timer belongs to the microphone, not to the call. So this
+    /// looks in every few seconds and hangs up once the silence has lasted.
+    private func beginBackgroundCall() {
+        lastVoiceActivity = Date()
+        guard !onBackgroundCall else { return }
+        onBackgroundCall = true
+        backgroundCallTask?.cancel()
+        backgroundCallTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard let self, self.onBackgroundCall, !Task.isCancelled else { return }
+                if self.conversationIsLive {
+                    self.lastVoiceActivity = Date()
+                    continue
+                }
+                guard Date().timeIntervalSince(self.lastVoiceActivity) >= Self.backgroundCallGrace
+                else { continue }
+                self.onBackgroundCall = false
+                self.voiceForeground = false
+                self.statusPollTask?.cancel()
+                self.statusPollTask = nil
+                self.speech.suspend(hangingUp: true)
+                return
+            }
+        }
+    }
+
+    /// Stop watching. Whether anything is torn down is the caller's business.
+    private func endBackgroundCall() {
+        backgroundCallTask?.cancel()
+        backgroundCallTask = nil
+        onBackgroundCall = false
+    }
+    #endif
+
     private func startStatusPolling() {
         statusPollTask?.cancel()
         statusPollTask = Task { [weak self] in
@@ -1003,6 +1059,24 @@ final class AppModel: ObservableObject {
         // "the window went away" must not be answered with "stop".
         if !active && overlayVisible { return }
         #endif
+        #if os(iOS)
+        // Leaving the app is not leaving the conversation. Every path that
+        // backgrounds the scene arrives here with `false`, and `false` meant
+        // `speech.suspend()` — the microphone closed and the sentence being
+        // read out was cut off mid-word the moment you swiped to the Home
+        // Screen. With background audio declared he can keep going, so going
+        // to another app should feel like being on a call and walking into
+        // the next room.
+        //
+        // Only while there *is* a call. An idle app that merely went to the
+        // background hands the microphone back, because holding it open for
+        // nothing costs battery and lights the recording indicator for no one.
+        if !active, conversationIsLive {
+            beginBackgroundCall()
+            return
+        }
+        endBackgroundCall()
+        #endif
         voiceForeground = active
         if active {
             startStatusPolling()
@@ -1010,7 +1084,9 @@ final class AppModel: ObservableObject {
         } else {
             statusPollTask?.cancel()
             statusPollTask = nil
-            speech.suspend()
+            // Reaching here with the app in the background means nothing was
+            // live to carry, so the session goes back with the microphone.
+            speech.suspend(hangingUp: true)
         }
     }
 
