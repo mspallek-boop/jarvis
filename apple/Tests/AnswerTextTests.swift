@@ -10,6 +10,20 @@ import Foundation
         }
         let plain = AnswerText.formatted("Quelle: https://github.com/eadmin2/jarvis_ai")
         precondition(plain.runs.contains { $0.link?.host == "github.com" })
-        print("6 answer rendering cases passed")
+        // The bridge replaces every inline image with a [Bild] marker and moves
+        // the picture into the attachments. On the voice stage the gallery
+        // shows that picture, so the word for it is noise.
+        precondition(VoiceStageText.withoutPicturePlaceholders(
+            "Hier ist die Garage.\n\n[Bild]", hasPictures: true) == "Hier ist die Garage.")
+        precondition(VoiceStageText.withoutPicturePlaceholders(
+            "[Bild] Welches gefällt dir? [Bild]", hasPictures: true) == "Welches gefällt dir?")
+        // Without a gallery the marker is the only sign a picture exists.
+        precondition(VoiceStageText.withoutPicturePlaceholders(
+            "Hier ist die Garage.\n\n[Bild]", hasPictures: false) == "Hier ist die Garage.\n\n[Bild]")
+        // Nothing else that looks like a bracket may be eaten.
+        precondition(VoiceStageText.withoutPicturePlaceholders(
+            "[Bildschirm] bleibt", hasPictures: true) == "[Bildschirm] bleibt")
+
+        print("10 answer rendering cases passed")
     }
 }

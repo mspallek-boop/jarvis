@@ -498,20 +498,54 @@ struct ContentView: View {
                 .frame(maxHeight: 150)
                 .padding(.horizontal, 28)
             } else if let last = model.messages.last, model.messages.count > 1 {
+                // Pictures first, then the words. Asking "which of these?" out
+                // loud only works if there is something to look at, and voice
+                // mode never drew the message list — so an answer carrying
+                // images showed its "[Bild]" placeholder and nothing else.
+                if !latestPictures.isEmpty {
+                    voiceGallery
+                }
                 ScrollView {
-                    Text(last.role == .jarvis ? AnswerText.formatted(last.text) : AttributedString(last.text))
+                    Text(last.role == .jarvis
+                         ? AnswerText.formatted(VoiceStageText.withoutPicturePlaceholders(last.text,
+                                                                                          hasPictures: !latestPictures.isEmpty))
+                         : AttributedString(last.text))
                         .font(model.appFont(.callout))
                         .foregroundStyle(ink.opacity(0.65))
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 }
                 .scrollIndicators(.hidden)
-                .frame(maxHeight: 150)
+                .frame(maxHeight: latestPictures.isEmpty ? 150 : 96)
                 .padding(.horizontal, 28)
             }
             Spacer(minLength: 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The pictures from the last answer — at most three, because the point is
+    /// a choice a person can make at a glance, not a contact sheet.
+    private var latestPictures: [MessageAttachment] {
+        guard let last = model.messages.last, last.role == .jarvis else { return [] }
+        return Array(last.attachments.filter { $0.kind == .image }.prefix(3))
+    }
+
+    private var voiceGallery: some View {
+        HStack(spacing: 10) {
+            ForEach(latestPictures) { picture in
+                InlineAttachmentImage(picture: picture, ink: ink)
+                    .frame(maxWidth: 130, maxHeight: 130)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(ink.opacity(0.14), lineWidth: 0.5)
+                    }
+                    .accessibilityLabel(picture.title.isEmpty ? "Bild" : picture.title)
+            }
+        }
+        .frame(maxHeight: 130)
+        .padding(.horizontal, 24)
     }
 
     private var inputHandle: some View {

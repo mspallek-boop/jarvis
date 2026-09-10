@@ -27,3 +27,21 @@ enum AnswerText {
         return result
     }
 }
+
+/// What the voice stage does with the markers the bridge leaves behind.
+enum VoiceStageText {
+    /// The bridge swaps every inline image for a `[Bild]` marker and moves the
+    /// picture into the attachments. In the message list that marker sits next
+    /// to the picture and reads fine. On the voice stage the text is centred
+    /// and alone, so once the gallery is showing the same picture, the marker
+    /// is a word for something already on screen.
+    static func withoutPicturePlaceholders(_ text: String, hasPictures: Bool) -> String {
+        guard hasPictures else { return text }
+        let stripped = text.replacingOccurrences(
+            of: #"\[Bild\]"#, with: "", options: .regularExpression)
+        return stripped
+            .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

@@ -106,7 +106,9 @@ struct AttachmentStrip: View {
     }
 }
 
-private struct InlineAttachmentImage: View {
+/// Not private: the voice stage shows the same pictures, and one loader with
+/// one set of size and type limits is worth more than two that drift apart.
+struct InlineAttachmentImage: View {
     let picture: MessageAttachment
     let ink: Color
     @State private var preview: CGImage?
