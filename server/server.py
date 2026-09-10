@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import re
+import audioop
 import shutil
 import subprocess
 import tempfile
@@ -491,6 +492,74 @@ class VoicePipelineServer:
                         timing.first_tts_audio_byte_monotonic = time.perf_counter()
                     yield chunk
 
+    def _piper_tts_chunks(self, text: str, timing: TurnTiming) -> Iterator[bytes]:
+        """Local *neural* speech, kept warm by the Piper server next door.
+
+        `say` is intelligible and nothing else. When the cloud voice is gone —
+        an exhausted free tier lasts until the month turns — this is the
+        difference between JARVIS sounding like himself and sounding like a
+        screen reader reading a receipt.
+
+        Piper answers at the model's own rate (22050 for the -high voices) and
+        the rest of the pipeline is 16 kHz mono, so the stream is resampled on
+        the way through. `ratecv` needs whole frames, hence the carried tail.
+        """
+        local = self.cfg["voice"].get("piper") or {}
+        token = os.environ.get("JARVIS_APP_TOKEN", "")
+        if not token:
+            raise RuntimeError("Piper: no JARVIS_APP_TOKEN")
+        response = requests.post(
+            str(local.get("url") or "http://127.0.0.1:8789/speech"),
+            json={"text": text[:600], "model": str(local.get("model") or "")},
+            headers={"Authorization": f"Bearer {token}"},
+            stream=True, timeout=30,
+        )
+        if response.status_code >= 400:
+            status, detail = response.status_code, response.text[:200]
+            response.close()
+            raise RuntimeError(f"Piper HTTP {status}: {detail}")
+        timing.tts_model = "piper"
+        timing.voice_id = Path(str(local.get("model") or "de_DE-thorsten-high")).stem
+        source_rate = int(response.headers.get("X-Sample-Rate") or 22050)
+        target_rate = 16000
+        state = None
+        tail = b""
+        try:
+            for chunk in response.iter_content(chunk_size=4096):
+                if not chunk:
+                    continue
+                if timing.first_tts_audio_byte_monotonic is None:
+                    timing.first_tts_audio_byte_monotonic = time.perf_counter()
+                if source_rate == target_rate:
+                    yield chunk
+                    continue
+                chunk = tail + chunk
+                usable = len(chunk) - (len(chunk) % 2)   # int16 frames only
+                tail = chunk[usable:]
+                if not usable:
+                    continue
+                converted, state = audioop.ratecv(
+                    chunk[:usable], 2, 1, source_rate, target_rate, state)
+                yield converted
+        finally:
+            response.close()
+
+    def _local_tts_chunks(self, text: str, timing: TurnTiming) -> Iterator[bytes]:
+        """Speak without the cloud: the neural voice first, the system one last.
+
+        Falling back must not also mean sounding worse than it has to. Piper is
+        local, already warm and a real voice; `say` is the floor, for when it is
+        not running.
+        """
+        if str((self.cfg["voice"].get("piper") or {}).get("enabled", True)).lower() != "false":
+            try:
+                yield from self._piper_tts_chunks(text, timing)
+                return
+            except Exception as exc:
+                print(f"Piper unavailable ({type(exc).__name__}: {exc}) — "
+                      f"falling back to the system voice", flush=True)
+        yield from self._macos_tts_chunks(text, timing)
+
     def tts_chunks_sync(self, text: str, timing: TurnTiming) -> Iterator[bytes]:
         voice = self.cfg["voice"]
         key = os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("ELEVEN_API_KEY") or os.environ.get("XI_API_KEY")
@@ -498,7 +567,7 @@ class VoicePipelineServer:
             # No cloud key: fall back to local speech when configured, so the
             # pipeline still speaks instead of failing the whole turn.
             if str(voice.get("fallback", "")).lower() == "macos" and shutil.which("say"):
-                yield from self._macos_tts_chunks(text, timing)
+                yield from self._local_tts_chunks(text, timing)
                 return
             raise RuntimeError("ElevenLabs API key not found")
         # The env wins over the file. server.yaml is copied from the example
@@ -538,7 +607,7 @@ class VoicePipelineServer:
             if local_voice_available:
                 print(f"ElevenLabs unreachable ({type(exc).__name__}) — "
                       f"speaking with the local macOS voice", flush=True)
-                yield from self._macos_tts_chunks(text, timing)
+                yield from self._local_tts_chunks(text, timing)
                 return
             raise RuntimeError(f"ElevenLabs unreachable: {exc}") from exc
         if response.status_code >= 400:
@@ -554,7 +623,7 @@ class VoicePipelineServer:
             if local_voice_available:
                 print(f"ElevenLabs HTTP {status} ({detail[:120]}) — "
                       f"speaking with the local macOS voice", flush=True)
-                yield from self._macos_tts_chunks(text, timing)
+                yield from self._local_tts_chunks(text, timing)
                 return
             raise RuntimeError(f"ElevenLabs HTTP {status}: {detail}")
         try:
