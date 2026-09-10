@@ -50,6 +50,13 @@ WhatsApp is paired to the user's personal account. You send through the terminal
     hermes send --to whatsapp:<chat_id> "<text>"
     hermes send --list whatsapp        # show known chats/targets
 
+**More than one line goes through stdin, never as `\n` in quotes.** Inside `"…"` the shell passes a backslash and an n, and WhatsApp shows them literally — the nutrition group received "Frühstück:\n566 kcal\n…" on 2026-09-10. Write real line breaks in a heredoc:
+
+    hermes send --to whatsapp:<chat_id> --file - <<'EOF'
+    Frühstück: 566 kcal
+    Snack: 478 kcal
+    EOF
+
 When the user names a person rather than a number ("schreib rici"), resolve it from the Mac's contacts — never ask for a number he already has stored. Hand it a dictated number the same way: it converts any format into a chat id and names who it is stored as.
 
     /Users/marlon/Documents/JARVIS/scripts/jarvis-contact.sh rici
