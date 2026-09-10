@@ -45,16 +45,24 @@ same `/api/calories/*` routes above.
 
 ## Sugar
 
-Any food entry may carry an optional `sugar_g` (grams, 0–2000):
+Any food entry may carry optional nutrition values in grams (0–2000):
 
 ```json
 POST /api/calories/entries
-{"calories":540,"description":"vegetable pasta","sugar_g":6.5}
+{"calories":540,"description":"vegetable pasta","protein_g":22,"fat_g":14,"carbohydrates_g":75,"sugar_g":6.5}
 ```
 
 A day summary's `total_sugar_g` adds logged entries' `sugar_g` to whatever
 `dietary_sugar_g` HealthKit synced for that day (see below), so `null` means
 nothing was ever recorded — not zero grams.
+
+## Daily WhatsApp balance
+
+`calories_daily_report` is the versioned report generator for the evening
+balance. It uses the existing daily-summary data and returns a message ready to
+send unchanged: a dated heading, a compact plain-text table, separate status
+badges, then one paragraph listing every recorded food and drink. Values that
+were never logged are shown as `nicht erfasst`, never as invented zeroes.
 
 ## Activity (steps and calorie balance from Apple Health)
 

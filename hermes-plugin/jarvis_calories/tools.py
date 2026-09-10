@@ -10,6 +10,8 @@ import urllib.request
 from datetime import date
 from typing import Any
 
+from .report import format_daily_balance
+
 
 CALORIES_URL = os.environ.get("JARVIS_CALORIES_URL", "http://127.0.0.1:8765/api/calories")
 
@@ -41,6 +43,19 @@ def calories_log(args: dict[str, Any], **kwargs: Any) -> str:
 def calories_daily_summary(args: dict[str, Any], **kwargs: Any) -> str:
     day = args.get("date") if isinstance(args, dict) else None
     return _request(f"/days/{urllib.parse.quote(str(day), safe='')}" if day else f"/days/{date.today().isoformat()}")
+
+
+def calories_daily_report(args: dict[str, Any], **kwargs: Any) -> str:
+    """Return a formatted, ready-to-send daily balance without changing data."""
+    day = args.get("date") if isinstance(args, dict) else None
+    raw = _request(f"/days/{urllib.parse.quote(str(day), safe='')}" if day else f"/days/{date.today().isoformat()}")
+    try:
+        summary = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(summary, dict) or summary.get("ok") is False:
+        return raw
+    return format_daily_balance(summary)
 
 
 def calories_weekly_summary(args: dict[str, Any], **kwargs: Any) -> str:

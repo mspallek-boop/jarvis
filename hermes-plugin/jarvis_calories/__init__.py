@@ -8,6 +8,8 @@ def register(ctx):
                       handler=tools.calories_log)
     ctx.register_tool(name="calories_daily_summary", toolset="health", schema=schemas.CALORIES_DAILY,
                       handler=tools.calories_daily_summary)
+    ctx.register_tool(name="calories_daily_report", toolset="health", schema=schemas.CALORIES_DAILY_REPORT,
+                      handler=tools.calories_daily_report)
     ctx.register_tool(name="calories_weekly_summary", toolset="health", schema=schemas.CALORIES_WEEKLY,
                       handler=tools.calories_weekly_summary)
     ctx.register_tool(name="calories_progress", toolset="health", schema=schemas.CALORIES_PROGRESS,

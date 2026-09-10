@@ -76,6 +76,12 @@ def _optional_int(value: object, field: str, minimum: int, maximum: int) -> int 
     return value
 
 
+def _total_optional(entries: list[dict[str, Any]], field: str) -> float | None:
+    """Total a nutrient only when at least one entry actually recorded it."""
+    values = [entry[field] for entry in entries if entry[field] is not None]
+    return round(sum(values), 1) if values else None
+
+
 class CalorieTracker:
     """SQLite repository for calorie entries, targets and weekly check-ins."""
 
@@ -103,6 +109,9 @@ class CalorieTracker:
                     description TEXT NOT NULL,
                     meal TEXT,
                     sugar_g REAL,
+                    protein_g REAL,
+                    fat_g REAL,
+                    carbohydrates_g REAL,
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS calorie_entries_day_idx ON calorie_entries(day, occurred_at);
@@ -127,18 +136,21 @@ class CalorieTracker:
                 );
                 """
             )
-            # A diary created before sugar_g existed lacks the column; the
-            # CREATE TABLE above only applies to a brand-new file.
+            # A diary created before optional nutrition fields existed lacks
+            # their columns; the CREATE TABLE above only applies to a new file.
             existing = {row[1] for row in conn.execute("PRAGMA table_info(calorie_entries)")}
-            if "sugar_g" not in existing:
-                conn.execute("ALTER TABLE calorie_entries ADD COLUMN sugar_g REAL")
+            for column in ("sugar_g", "protein_g", "fat_g", "carbohydrates_g"):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE calorie_entries ADD COLUMN {column} REAL")
 
     @staticmethod
     def _entry(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"], "occurred_at": row["occurred_at"], "day": row["day"],
             "calories": row["calories"], "description": row["description"], "meal": row["meal"],
-            "sugar_g": row["sugar_g"], "created_at": row["created_at"],
+            "sugar_g": row["sugar_g"], "protein_g": row["protein_g"],
+            "fat_g": row["fat_g"], "carbohydrates_g": row["carbohydrates_g"],
+            "created_at": row["created_at"],
         }
 
     def add_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -151,14 +163,20 @@ class CalorieTracker:
             "description": _text(payload.get("description"), "description", 250, required=True),
             "meal": _text(payload.get("meal"), "meal", 40),
             "sugar_g": _optional_number(payload.get("sugar_g"), "sugar_g", 0, 2000),
+            "protein_g": _optional_number(payload.get("protein_g"), "protein_g", 0, 2000),
+            "fat_g": _optional_number(payload.get("fat_g"), "fat_g", 0, 2000),
+            "carbohydrates_g": _optional_number(
+                payload.get("carbohydrates_g"), "carbohydrates_g", 0, 2000),
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         self.initialize()
         with self._connection() as conn:
             conn.execute(
                 """INSERT INTO calorie_entries
-                   (id, occurred_at, day, calories, description, meal, sugar_g, created_at)
-                   VALUES (:id, :occurred_at, :day, :calories, :description, :meal, :sugar_g, :created_at)""",
+                   (id, occurred_at, day, calories, description, meal, sugar_g, protein_g, fat_g,
+                    carbohydrates_g, created_at)
+                   VALUES (:id, :occurred_at, :day, :calories, :description, :meal, :sugar_g, :protein_g,
+                           :fat_g, :carbohydrates_g, :created_at)""",
                 entry,
             )
         return entry
@@ -265,6 +283,9 @@ class CalorieTracker:
             "activity_calories": activity_calories,
             "net_calories": total - activity_calories if activity_calories is not None else None,
             "total_sugar_g": round(logged_sugar + (synced_sugar or 0), 1) if has_sugar else None,
+            "total_protein_g": _total_optional(entries, "protein_g"),
+            "total_fat_g": _total_optional(entries, "fat_g"),
+            "total_carbohydrates_g": _total_optional(entries, "carbohydrates_g"),
         }
 
     def week_summary(self, week_value: str | date) -> dict[str, Any]:

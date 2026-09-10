@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+import sqlite3
+import sys
 
 from calorie_tracker import CalorieTracker, CalorieValidationError
+
+PLUGIN_PARENT = Path(__file__).resolve().parent.parent / "hermes-plugin"
+if str(PLUGIN_PARENT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_PARENT))
+from jarvis_calories.report import format_daily_balance
+from jarvis_calories import tools as calorie_tools
 
 
 def test_tracker_persists_entries_and_computes_daily_remaining(tmp_path):
@@ -114,6 +123,71 @@ def test_tracker_merges_sugar_and_activity_into_calorie_balance(tmp_path):
     tracker.record_activity({"day": "2026-09-08", "steps": 9000})
     updated = tracker.activity_for_day(date(2026, 9, 8))
     assert updated["steps"] == 9000
+
+
+def test_tracker_totals_optional_macros_without_changing_existing_entries(tmp_path):
+    tracker = CalorieTracker(tmp_path / "calories.sqlite3")
+    tracker.add_entry({
+        "calories": 540, "description": "vegetable pasta", "protein_g": 22,
+        "fat_g": 14, "carbohydrates_g": 75, "sugar_g": 6.5,
+        "occurred_at": "2026-09-08T18:15:00+02:00",
+    })
+    tracker.add_entry({"calories": 100, "description": "tea", "occurred_at": "2026-09-08T20:00:00+02:00"})
+
+    summary = tracker.day_summary("2026-09-08")
+    assert summary["total_protein_g"] == 22
+    assert summary["total_fat_g"] == 14
+    assert summary["total_carbohydrates_g"] == 75
+    assert summary["entries"][1]["protein_g"] is None
+
+
+def test_tracker_migrates_existing_diary_without_losing_entries(tmp_path):
+    path = tmp_path / "calories.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE calorie_entries (
+            id TEXT PRIMARY KEY, occurred_at TEXT NOT NULL, day TEXT NOT NULL,
+            calories INTEGER NOT NULL, description TEXT NOT NULL, meal TEXT,
+            sugar_g REAL, created_at TEXT NOT NULL)""")
+        conn.execute("""INSERT INTO calorie_entries
+            VALUES ('old-entry', '2026-09-08T08:00:00+02:00', '2026-09-08', 450,
+                    'existing breakfast', 'breakfast', 8.5, '2026-09-08T08:00:00+02:00')""")
+
+    summary = CalorieTracker(path).day_summary("2026-09-08")
+    assert summary["entries"][0]["description"] == "existing breakfast"
+    assert summary["entries"][0]["protein_g"] is None
+    assert summary["total_sugar_g"] == 8.5
+
+
+def test_daily_balance_report_has_date_table_badges_and_all_entries():
+    report = format_daily_balance({
+        "date": "2026-09-09", "total_calories": 1850, "target_calories": 2200,
+        "remaining_calories": 350, "total_protein_g": 132.5, "total_fat_g": 58,
+        "total_carbohydrates_g": 190, "total_sugar_g": 42.5, "activity_calories": 320,
+        "net_calories": 1530, "steps": 8421,
+        "entries": [{"description": "Greek yogurt"}, {"description": "Lentil bowl"}, {"description": "Protein shake"}],
+    })
+
+    assert report.startswith("*Tagesbilanz – Mittwoch, 9. September 2026*")
+    assert "Wert             Heute" in report
+    assert "Kalorien         1.850 kcal" in report
+    assert "Eiweiß           132,5 g" in report
+    assert "Zucker           42,5 g" in report
+    assert "[KALORIENZIEL: IM RAHMEN]" in report
+    assert "[NÄHRWERTE: VOLLSTÄNDIG]" in report
+    assert "[AKTIVITÄT ERFASST]" in report
+    assert report.endswith("Erfasst (3): Greek yogurt; Lentil bowl; Protein shake")
+
+
+def test_daily_report_tool_returns_the_formatted_message(monkeypatch):
+    monkeypatch.setattr(calorie_tools, "_request", lambda *args, **kwargs: """{
+        "date":"2026-09-09","total_calories":300,"target_calories":2000,
+        "remaining_calories":1700,"total_protein_g":null,"total_fat_g":null,
+        "total_carbohydrates_g":null,"total_sugar_g":null,"entries":[{"description":"tea"}]
+    }""")
+
+    report = calorie_tools.calories_daily_report({"date": "2026-09-09"})
+    assert "*Tagesbilanz – Mittwoch, 9. September 2026*" in report
+    assert "Erfasst (1): tea" in report
 
 
 def test_day_summary_omits_activity_fields_when_nothing_synced(tmp_path):

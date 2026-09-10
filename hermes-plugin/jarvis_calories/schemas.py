@@ -12,6 +12,9 @@ CALORIES_LOG = {
         "description": {"type": "string", "description": "Food or drink, e.g. Greek yogurt"},
         "meal": {"type": "string", "description": "Optional meal such as breakfast, lunch, dinner, snack"},
         "sugar_g": {"type": "number", "description": "Optional sugar content in grams, if known"},
+        "protein_g": {"type": "number", "description": "Optional protein content in grams, if known"},
+        "fat_g": {"type": "number", "description": "Optional fat content in grams, if known"},
+        "carbohydrates_g": {"type": "number", "description": "Optional carbohydrate content in grams, if known"},
         "occurred_at": {"type": "string", "description": "Optional ISO-8601 timestamp; omit for now"},
     }, "required": ["calories", "description"]},
 }
@@ -19,6 +22,19 @@ CALORIES_LOG = {
 CALORIES_DAILY = {
     "name": "calories_daily_summary",
     "description": "Read the local calorie diary for one calendar day, including entries, total, target, and remaining calories.",
+    "parameters": {"type": "object", "properties": {
+        "date": {"type": "string", "description": "ISO date YYYY-MM-DD; omit for today"},
+    }},
+}
+
+CALORIES_DAILY_REPORT = {
+    "name": "calories_daily_report",
+    "description": (
+        "Generate the ready-to-send daily nutrition balance in German. Use it for the evening daily "
+        "report, then send its output exactly as returned: it already has the date, a plain-text "
+        "WhatsApp-readable table, separate status badges, and every recorded food/drink. Do not "
+        "reformat it into prose or add emoji."
+    ),
     "parameters": {"type": "object", "properties": {
         "date": {"type": "string", "description": "ISO date YYYY-MM-DD; omit for today"},
     }},
