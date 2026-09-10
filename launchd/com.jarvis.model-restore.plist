@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.model-restore</string>
+    <!-- One purpose: put Hermes back on gpt-5.6-luna when the ChatGPT Plus quota
+         returns (2026-09-15). Hourly until it succeeds, then it unloads itself.
+         Runs from ~/.hermes/services like every agent here — launchd has no TCC
+         access to ~/Documents. No ProcessType Background: it throttles the job
+         and everything it starts. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/marlon/.local/bin/python3.11</string>
+        <string>/Users/marlon/.hermes/services/jarvis-model-restore.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-model-restore.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/marlon/.hermes/logs/jarvis-model-restore.error.log</string>
+</dict>
+</plist>
