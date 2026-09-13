@@ -53,6 +53,7 @@ HOME = Path.home()
 STATE_PATH = Path(os.environ.get("JARVIS_STANDIN_STATE",
                                 HOME / ".hermes/jarvis-chat-standin.json"))
 NOTIFY_URL = os.environ.get("JARVIS_NOTIFY_URL", "http://127.0.0.1:8770/notify")
+NOTIFY_KIND = "task"
 SAY_URL = os.environ.get("JARVIS_SAY_URL", "http://127.0.0.1:8765/api/say")
 SEND_URL = os.environ.get("JARVIS_WA_SEND_URL", "http://127.0.0.1:3000/send")
 MODE_SCRIPT = Path(__file__).with_name("jarvis-whatsapp-mode.py")
@@ -277,7 +278,10 @@ def deliver(title: str, text: str, speak: bool, spoken: str = "") -> None:
     The app is a screen the user chose to look at; the speaker and the lock
     screen are a room other people are in.
     """
-    delivered = post_json(NOTIFY_URL, {"kind": "chat_standin", "title": title, "text": text},
+    # "task", not a kind of its own: the bridge accepts only NOTIFY_KINDS and
+    # answered "chat_standin" with 400, so no report ever reached the app — the
+    # user got at most a banner. A stand-in is a standing task there anyway.
+    delivered = post_json(NOTIFY_URL, {"kind": NOTIFY_KIND, "title": title, "text": text},
                           {"Authorization": f"Bearer {env_token('JARVIS_APP_TOKEN', 'JARVIS_HUD_TOKEN')}"})
     if not delivered:
         system_banner(f"{title}: {spoken or text}")

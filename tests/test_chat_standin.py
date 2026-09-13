@@ -871,3 +871,29 @@ def test_giving_up_expires(tmp_path, monkeypatch):
     module.shell.clear()
     module.ensure_api_up()
     assert [c for c in module.shell if c[0] == "launchctl"]
+
+
+def test_a_report_uses_a_kind_the_bridge_accepts(tmp_path, monkeypatch):
+    """The bridge answers an unknown kind with 400, and then nothing reaches the app.
+
+    That is what happened: every report went out as "chat_standin", the bridge
+    only knows NOTIFY_KINDS, and the app showed a silent stand-in through a live
+    chat. Read the set from the bridge source, so the two cannot drift apart.
+    """
+    import ast
+    import re
+    load(tmp_path, monkeypatch)       # env into tmp; the stubbed module is not used
+    spec = importlib.util.spec_from_file_location(
+        "chat_standin_real", ROOT / "scripts" / "jarvis-chat-standin.py")
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    posts = []
+    monkeypatch.setattr(real, "post_json",
+                        lambda url, payload, headers=None: posts.append((url, payload)) or True)
+
+    real.deliver("Sofia", "fragt nach Samstag", speak=False)
+
+    source = (ROOT / "bridge" / "jarvis_bridge.py").read_text()
+    accepted = ast.literal_eval(re.search(r"^NOTIFY_KINDS = (\{.*\})$", source, re.M).group(1))
+    kinds = [payload["kind"] for url, payload in posts if url == real.NOTIFY_URL]
+    assert len(kinds) == 1 and kinds[0] in accepted
