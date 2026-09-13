@@ -34,6 +34,9 @@ def mode(tmp_path, monkeypatch):
     # and everything else must never touch the real gateway.
     module._real_restart_gateway = module.restart_gateway
     module.restart_gateway = lambda: True
+    # The detached reloader is a real process: a patched subprocess.run in this
+    # test would not reach it, and it would stop the real gateway.
+    module._spawn_detached_reload = lambda: False
     module._env_path = env
     return module
 
@@ -366,3 +369,98 @@ def test_giving_up_hands_the_stamp_back(mode, monkeypatch, tmp_path):
 
     assert mode._real_restart_gateway() is False
     assert not stamp.exists()
+
+
+# ------------------------------------------------------ detached sequenced reload
+
+SERVER_STREAM = "tcp4  0  0  127.0.0.1.8642  127.0.0.1.52126  ESTABLISHED\n"
+SERVER_TIME_WAIT = "tcp4  0  0  127.0.0.1.8642  127.0.0.1.52001  TIME_WAIT\n"
+# Neither blocks the port: the listener itself, and a client that closed first.
+HARMLESS = ("tcp4  0  0  127.0.0.1.8642  *.*  LISTEN\n"
+            "tcp4  0  0  127.0.0.1.52091  127.0.0.1.8642  TIME_WAIT\n")
+
+
+def reload_shell(mode, monkeypatch, tmp_path, netstat, lsof):
+    """Fake shell for `sequenced_reload`; netstat and lsof answer from the log so far."""
+    calls = {"argv": [], "netstat": 0}
+
+    def fake_run(argv, **kwargs):
+        calls["argv"].append(list(argv))
+        out = ""
+        if argv[0] == "netstat":
+            out = netstat(calls)
+            calls["netstat"] += 1
+        elif argv[0] == "lsof":
+            out = lsof(calls)
+        return type("Done", (), {"returncode": 0, "stdout": out})()
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    monkeypatch.setattr(mode.os, "getuid", lambda: 501)
+    monkeypatch.setattr(mode, "RESTART_STAMP", tmp_path / "restart.stamp")
+    monkeypatch.setattr(mode, "API_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(mode.time, "sleep", lambda _s: None)
+    return calls
+
+
+def launchctl(calls):
+    return [c for c in calls["argv"] if c[0] == "launchctl"]
+
+
+def test_the_restart_lets_the_ordering_turn_finish_before_stopping(mode, monkeypatch, tmp_path):
+    """Stopping mid-stream is what blocked the port.
+
+    Every API turn the stop cuts off leaves a server-side TIME_WAIT on 8642,
+    and Hermes binds without SO_REUSEADDR on macOS — the replacement lost its
+    API and the turn that ordered the stand-in died with "[Command interrupted]".
+    """
+    def lsof(calls):
+        stopped = any(c[:2] == ["launchctl", "kill"] for c in calls["argv"])
+        return "222\n" if stopped else "111\n"
+
+    calls = reload_shell(mode, monkeypatch, tmp_path,
+                         netstat=lambda c: HARMLESS + (SERVER_STREAM if c["netstat"] < 3 else ""),
+                         lsof=lsof)
+    monkeypatch.setattr(mode, "PORT_FREE_WAIT_SECONDS", 0.05)
+
+    assert mode.sequenced_reload() == 0
+    stop = calls["argv"].index(["launchctl", "kill", "TERM", "gui/501/ai.hermes.gateway"])
+    netstats_before_stop = sum(1 for c in calls["argv"][:stop] if c[0] == "netstat")
+    assert netstats_before_stop == 4
+    assert ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"] not in launchctl(calls)
+
+
+def test_the_recovery_kick_waits_out_the_time_wait(mode, monkeypatch, tmp_path):
+    """A kick while the TIME_WAIT lasts fails the bind exactly like the first start."""
+    kicked_at = {}
+
+    def lsof(calls):
+        if ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"] in calls["argv"]:
+            # The replacement needs a moment to bind; the first look finds nothing.
+            first = "netstat" not in kicked_at
+            kicked_at.setdefault("netstat", calls["netstat"])
+            return "" if first else "333\n"
+        stopped = any(c[:2] == ["launchctl", "kill"] for c in calls["argv"])
+        return "" if stopped else "111\n"
+
+    calls = reload_shell(mode, monkeypatch, tmp_path,
+                         netstat=lambda c: HARMLESS + (SERVER_TIME_WAIT if c["netstat"] < 5 else ""),
+                         lsof=lsof)
+
+    assert mode.sequenced_reload() == 0
+    assert kicked_at["netstat"] == 6
+    kicks = [c for c in launchctl(calls) if c[1] == "kickstart"]
+    assert kicks[-1] == ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+
+
+def test_an_installed_service_restarts_through_the_detached_reloader(mode, monkeypatch, tmp_path):
+    """The switch runs inside a gateway turn, so it must not stop the gateway itself."""
+    plist = tmp_path / "ai.hermes.gateway.plist"
+    plist.write_text("<plist/>")
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", plist)
+    monkeypatch.setattr(mode, "RESTART_STAMP", tmp_path / "restart.stamp")
+    monkeypatch.setattr(mode, "_spawn_detached_reload", lambda: True)
+    calls = []
+    monkeypatch.setattr(mode.subprocess, "run", lambda argv, **kw: calls.append(argv))
+
+    assert mode._real_restart_gateway() is True
+    assert calls == []

@@ -196,3 +196,64 @@ The structured lifecycle log is the reliable source for exit classification:
   and the Hermes virtual environment (`No module named pytest`). No dependency
   installation was attempted because it would modify the environment.
 
+
+## Addendum 2026-09-13: the port is lost to TIME_WAIT, not to the old listener
+
+The EADDRINUSE on 8642 kept recurring after the 2026-09-12 sequenced reload
+(30 occurrences since 2026-09-08, the latest at 19:01:44 on 2026-09-13, seconds
+after a Sofia stand-in was started from the app). Waiting for the old *listener*
+to leave was the wrong gate:
+
+- Hermes binds api_server with `reuse_address=False` on macOS
+  (`gateway/platforms/api_server.py`, deliberate upstream). Without
+  SO_REUSEADDR, any socket still on 127.0.0.1:8642 blocks the bind — including
+  a TIME_WAIT, which lasts 2×MSL = 30s here (`net.inet.tcp.msl: 15000`).
+- Stopping the gateway interrupts API turns that are still streaming (the log
+  shows `api_at_start=3`), usually the very turn that ordered the stand-in. The
+  server closes those connections first, so their TIME_WAIT sits on :8642.
+- launchd respawns within about 5s, the bind fails, Hermes marks it a
+  non-retryable port conflict and runs WhatsApp-only. The recovery
+  `kickstart -k` 45s later works only because the TIME_WAIT has expired by then:
+  that is the second "Hermes crash".
+- `lsof -sTCP:LISTEN` cannot see TIME_WAIT (no owning process), so every
+  JARVIS-side check reported the port as free. Restarts with `api_at_start=0`
+  (for example 19:12:11, when the stand-in ended) bind cleanly.
+
+Fix in `scripts/jarvis-whatsapp-mode.py` (`sequenced_reload`): wait up to 120s
+until no ESTABLISHED socket has 8642 as its local end, then stop. If the
+replacement still comes up without its API, wait until netstat shows no socket
+on :8642 before the single `kickstart -k`. Tests in `tests/test_whatsapp_mode.py`
+now also stub `_spawn_detached_reload`, since that is a real detached process
+that a patched `subprocess.run` does not reach.
+
+## Addendum 2026-09-13: Hermes status output leaked into a stand-in chat
+
+During a Sofia stand-in the contact received Hermes-internal messages from
+Marlon's number: `↪ Redirected current run (iteration 1/150) …`,
+`🐍 Running code print(…)`, edited ("Bearbeitet") streamed bubbles, and
+`⚠️ Gateway shutting down` notices. Cause: `display.*` in
+`~/.hermes/config.yaml` applies to every platform, and its values
+(`tool_progress: all`, interim messages, busy-ack detail, streaming) were chosen
+for the app.
+
+The fix lives outside this repository, in `~/.hermes/config.yaml`. Re-apply it
+after reinstalling Hermes or resetting that file:
+
+```yaml
+display:
+  busy_ack_enabled: false        # global only; the api_server path sends no busy acks
+  platforms:
+    whatsapp:
+      tool_progress: 'off'
+      interim_assistant_messages: false
+      long_running_notifications: false
+      busy_ack_detail: false
+      streaming: false
+whatsapp:
+  gateway_restart_notification: false
+```
+
+The `display.platforms.whatsapp` values are read on every turn. The keys
+`busy_ack_enabled` and `gateway_restart_notification` are read only at gateway
+start. Verify with `gateway.display_config.resolve_display_setting`: WhatsApp
+must resolve to off/false, and `api_server` must keep `tool_progress=all`.

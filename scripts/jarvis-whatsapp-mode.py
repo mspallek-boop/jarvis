@@ -28,6 +28,7 @@ setting the user changed by hand is not silently overwritten with a guess.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -136,6 +137,15 @@ GATEWAY_PLIST = Path.home() / "Library/LaunchAgents" / f"{GATEWAY_LABEL}.plist"
 # gateway may take to claim it before we assume it never will.
 API_PORT = int(os.environ.get("JARVIS_HERMES_API_PORT", "8642"))
 API_WAIT_SECONDS = 45.0
+# How long the sequenced restart waits for the old gateway to release the API
+# port after a clean stop, before it starts the replacement. A clean SIGTERM
+# exit frees it in well under a second; the ceiling only guards a slow shutdown.
+PORT_FREE_WAIT_SECONDS = 20.0
+# How long the sequenced restart lets API turns that are still streaming finish
+# before it stops the gateway — usually the very turn that ordered the switch.
+DRAIN_WAIT_SECONDS = 120.0
+# A server-side TIME_WAIT lives 2*MSL: 30s with macOS's default MSL of 15s.
+TIME_WAIT_SECONDS = 40.0
 # Shared with jarvis-chat-standin.py: both may decide a restart is due within
 # the same minute, and two `kickstart -k` on top of each other kill the
 # gateway the first one just started. The poller owns the cooldown; this side
@@ -218,21 +228,140 @@ def clear_restart_claim() -> None:
         pass
 
 
-def restart_gateway() -> bool:
-    """Ask launchd to restart the gateway, rather than asking the gateway to.
+def await_port_free(seconds: float) -> bool:
+    """Wait until no process holds the API port, i.e. the old gateway let go.
 
-    Turning the stand-in on is normally a Hermes tool call, so this script runs
-    as a child of the gateway. `hermes gateway restart` stops the service
-    first, which kills this process before it can start it again — launchd's
-    KeepAlive then brought the gateway back roughly a minute later, and for
-    that whole minute JARVIS answered nothing and the app showed a timeout.
-    That is the "Vertretung setzt den Agenten aus" fault.
-
-    `launchctl kickstart -k` hands the whole restart to launchd in one call.
-    The request is accepted before anything is killed, so it still completes
-    when this process dies with the old gateway, and the new one starts at
-    once instead of after a KeepAlive backoff.
+    Mirrors `api_listeners`' None-means-unknown contract: if lsof cannot answer
+    we do not block, because a restart must not stall on a diagnostic failure.
     """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        pids = api_listeners()
+        if pids is None or not pids:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def api_sockets():
+    """States of the TCP sockets whose *local* end is the API port, LISTEN aside.
+
+    Asked with netstat, not lsof: a TIME_WAIT has no owning process, so lsof
+    never shows it — and a TIME_WAIT is what actually loses the port. Hermes
+    binds 8642 without SO_REUSEADDR on macOS, so any socket still sitting on
+    that port makes the replacement fail with `address already in use`, which
+    Hermes treats as a permanent conflict: api_server is dropped and the
+    gateway runs on WhatsApp-only. None means netstat could not answer.
+    """
+    try:
+        done = subprocess.run(["netstat", "-an", "-p", "tcp"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = getattr(done, "stdout", None)
+    if output is None:
+        return None
+    states = []
+    for line in output.splitlines():
+        cols = line.split()
+        if (len(cols) >= 6 and cols[0].startswith("tcp")
+                and cols[3].endswith(f".{API_PORT}") and cols[5] != "LISTEN"):
+            states.append(cols[5])
+    return states
+
+
+def await_api_sockets_gone(seconds: float, states=None) -> bool:
+    """Wait until no socket on the API port is in one of `states` (any, if None).
+
+    Same None-means-unknown contract as `await_port_free`: never block a
+    restart on a diagnostic that cannot answer.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        found = api_sockets()
+        if found is None or not [s for s in found if states is None or s in states]:
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def sequenced_reload() -> int:
+    """Restart the gateway without leaving the API port blocked. Runs detached.
+
+    Launched in its own session by `_spawn_detached_reload`, so the SIGTERM
+    that stops the gateway cannot take this process down with the gateway child
+    that asked for the restart.
+
+    The port is lost to TIME_WAIT, not to the old listener. Stopping the
+    gateway cuts off every API turn still streaming — normally the very turn
+    that ordered the stand-in — and each cut leaves a server-side TIME_WAIT on
+    8642 for 30s. launchd respawns the gateway within seconds, its bind fails,
+    and the app shows "Hermes nicht erreichbar" until a second restart. Waiting
+    for the listener to disappear could never see that. So open turns finish
+    first; and if the replacement still comes up without its API, the TIME_WAIT
+    is waited out before the one recovery kick instead of kicking into it blind.
+    """
+    target = f"gui/{os.getuid()}/{GATEWAY_LABEL}"
+    before = api_listeners()
+    note_restart_request()
+    await_api_sockets_gone(DRAIN_WAIT_SECONDS, {"ESTABLISHED"})
+    # Stop, don't -k: a clean exit releases the port before anyone asks for it.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["launchctl", "kill", "TERM", target],
+                       capture_output=True, timeout=30)
+    await_port_free(PORT_FREE_WAIT_SECONDS)
+    # KeepAlive may already be relaunching; kickstart (no -k) only ensures it
+    # is running, and starts it promptly if KeepAlive is throttling the respawn.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["launchctl", "kickstart", target],
+                       capture_output=True, timeout=30)
+    if await_new_api(before, API_WAIT_SECONDS):
+        return 0
+    # Came up without its API: let the port go quiet, then kill-and-restart.
+    await_api_sockets_gone(TIME_WAIT_SECONDS)
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["launchctl", "kickstart", "-k", target],
+                       capture_output=True, timeout=30)
+    if await_new_api(api_listeners(), API_WAIT_SECONDS):
+        return 0
+    clear_restart_claim()
+    return 1
+
+
+def _spawn_detached_reload() -> bool:
+    """Start `sequenced_reload` in its own session so the gateway restart it
+    triggers cannot kill it. Returns True once the child is launched."""
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "_reload"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def restart_gateway() -> bool:
+    """Reload the gateway after a mode change, without dropping the API port.
+
+    A mode switch normally runs as a child of the gateway, so it cannot
+    stop-then-start inline: the stop would kill this process first. It hands
+    the restart to a detached sequencer (`sequenced_reload`, in its own
+    session) that stops the gateway, waits for port 8642 to be released, and
+    only then starts the replacement — so api_server binds cleanly instead of
+    racing the old listener. That race is what made ordering a WhatsApp
+    Vertretung drop Hermes for the app while the stand-in kept answering.
+
+    Returning True means the restart was launched: the mode env is already
+    written, WhatsApp receiving comes up, and the sequencer (backed by the
+    poller's `ensure_api_up`) brings the API port back. If the detach cannot be
+    launched, fall back to the atomic `kickstart -k` with reactive retry, then
+    the CLI.
+    """
+    if GATEWAY_PLIST.exists() and _spawn_detached_reload():
+        note_restart_request()
+        return True
+    # Fallback: the original in-process atomic restart with two-shot recovery.
     before = api_listeners()
     if GATEWAY_PLIST.exists():
         try:
@@ -243,12 +372,6 @@ def restart_gateway() -> bool:
                 note_restart_request()
                 if await_new_api(before, API_WAIT_SECONDS):
                     return True
-                # The replacement reached for the API port before the old
-                # listener let go of it: api_server failed to bind, and the
-                # gateway came up with WhatsApp only. It answers the stand-in
-                # and is invisible to the app, which is the confusing half of
-                # the failure. The old process is gone by now, so a second
-                # kickstart binds cleanly.
                 before = api_listeners()
                 try:
                     subprocess.run(
@@ -432,6 +555,11 @@ def cmd_off(_args) -> int:
     return 0 if ok else 1
 
 
+def cmd_reload(_args) -> int:
+    """Hidden: the detached body of restart_gateway (see _spawn_detached_reload)."""
+    return sequenced_reload()
+
+
 def cmd_enforce(args) -> int:
     """Called by launchd: switch back when the time is up."""
     state = load_state()
@@ -478,6 +606,9 @@ def main() -> int:
     enforce = sub.add_parser("enforce", help="abgelaufene Zeitbegrenzung durchsetzen (launchd)")
     enforce.add_argument("--verbose", action="store_true")
     enforce.set_defaults(func=cmd_enforce)
+
+    # Hidden: detached sequenced restart, spawned by restart_gateway itself.
+    sub.add_parser("_reload").set_defaults(func=cmd_reload)
 
     args = parser.parse_args()
     if not hasattr(args, "verbose"):
