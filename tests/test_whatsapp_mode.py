@@ -464,3 +464,42 @@ def test_an_installed_service_restarts_through_the_detached_reloader(mode, monke
 
     assert mode._real_restart_gateway() is True
     assert calls == []
+
+
+def test_the_reload_stops_the_bridge_so_the_new_mode_takes_effect(mode, monkeypatch, tmp_path):
+    """A connected bridge is adopted by the next gateway without comparing modes.
+
+    On 2026-09-14 "off" left a bot-mode bridge running with the contact still on
+    its list. It is stopped after the old gateway is gone and before the new one
+    starts. Only bridge.js is stopped, never some other process on the port.
+    """
+    killed = []
+    monkeypatch.setattr(mode.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    order = []
+
+    def lsof(calls):
+        return "4242\n5151\n" if any("-iTCP:3000" in a for a in calls["argv"][-1]) else "111\n"
+
+    calls = reload_shell(mode, monkeypatch, tmp_path, netstat=lambda c: HARMLESS, lsof=lsof)
+    real_run = mode.subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "ps":
+            order.append("ps")
+            out = ("/Users/x/.hermes/node/bin/node /Users/x/.hermes/hermes-agent/scripts/"
+                   "whatsapp-bridge/bridge.js --port 3000\n" if argv[-1] == "4242" else "/usr/bin/python3 other\n")
+            return type("Done", (), {"returncode": 0, "stdout": out})()
+        if argv[0] == "launchctl":
+            order.append(" ".join(argv[:2]))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(mode.subprocess, "run", run)
+    monkeypatch.setattr(mode, "PORT_FREE_WAIT_SECONDS", 0.05)
+    # After the stop the old API listener is gone; a new one appears once kicked.
+    monkeypatch.setattr(mode, "api_listeners",
+                        lambda: {"222"} if "launchctl kickstart" in order else
+                        (set() if "launchctl kill" in order else {"111"}))
+
+    mode.sequenced_reload()
+    assert killed == [(4242, mode.signal.SIGTERM)]
+    assert order.index("launchctl kill") < order.index("ps") < order.index("launchctl kickstart")

@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -146,6 +147,8 @@ PORT_FREE_WAIT_SECONDS = 20.0
 DRAIN_WAIT_SECONDS = 120.0
 # A server-side TIME_WAIT lives 2*MSL: 30s with macOS's default MSL of 15s.
 TIME_WAIT_SECONDS = 40.0
+# The WhatsApp bridge's HTTP port (Hermes' default for the Baileys bridge).
+BRIDGE_PORT = int(os.environ.get("JARVIS_WA_BRIDGE_PORT", "3000"))
 # Shared with jarvis-chat-standin.py: both may decide a restart is due within
 # the same minute, and two `kickstart -k` on top of each other kill the
 # gateway the first one just started. The poller owns the cooldown; this side
@@ -285,6 +288,35 @@ def await_api_sockets_gone(seconds: float, states=None) -> bool:
     return False
 
 
+def stop_bridge() -> None:
+    """Stop the WhatsApp bridge, so the next gateway spawns one in the new mode.
+
+    The bridge gets its mode and allowlist once, when it is spawned. A starting
+    gateway adopts any bridge that is still connected, and it compares only the
+    script hash, never the mode. A bridge that outlived the old gateway, for
+    example one spawned by a reconnect, then keeps the old mode through the
+    restart. That happened on 2026-09-14: "off" left a bot-mode bridge with the
+    contact on its list, and "on" had an old self-chat bridge drop the contact's
+    messages. Only a process that really is bridge.js is touched.
+    """
+    try:
+        done = subprocess.run(["lsof", "-t", "-nP", f"-iTCP:{BRIDGE_PORT}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return
+    for pid in (getattr(done, "stdout", None) or "").split():
+        if not pid.isdigit():
+            continue
+        try:
+            shown = subprocess.run(["ps", "-o", "command=", "-p", pid],
+                                   capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if "whatsapp-bridge/bridge.js" in (getattr(shown, "stdout", None) or ""):
+            with contextlib.suppress(OSError):
+                os.kill(int(pid), signal.SIGTERM)
+
+
 def sequenced_reload() -> int:
     """Restart the gateway without leaving the API port blocked. Runs detached.
 
@@ -310,6 +342,7 @@ def sequenced_reload() -> int:
         subprocess.run(["launchctl", "kill", "TERM", target],
                        capture_output=True, timeout=30)
     await_port_free(PORT_FREE_WAIT_SECONDS)
+    stop_bridge()
     # KeepAlive may already be relaunching; kickstart (no -k) only ensures it
     # is running, and starts it promptly if KeepAlive is throttling the respawn.
     with contextlib.suppress(OSError, subprocess.SubprocessError):

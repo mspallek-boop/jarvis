@@ -257,3 +257,34 @@ The `display.platforms.whatsapp` values are read on every turn. The keys
 `busy_ack_enabled` and `gateway_restart_notification` are read only at gateway
 start. Verify with `gateway.display_config.resolve_display_setting`: WhatsApp
 must resolve to off/false, and `api_server` must keep `tool_progress=all`.
+
+## Addendum 2026-09-14: a stand-in that could not hear, and an "off" that kept listening
+
+Timeline of the live stand-in test for Sofia:
+
+- The stand-in started at 23:59:28. The sequenced reload waited about 28s for
+  the app's turn to finish. During that time the old gateway's bridge was
+  still in self-chat mode and dropped Sofia's message
+  (`self_chat_mode_rejects_non_self`).
+- Under heavy load the replacement gateway needed until 00:03:22 to start
+  connecting WhatsApp. The first connect timed out, and a bot-mode bridge
+  only came up at 00:04:49. The user had already ended the stand-in by then.
+  The window never had a working receiver.
+- The "off" restart at 00:06:33 adopted that bot-mode bridge. A starting
+  gateway reuses any connected bridge whose script hash matches
+  (`_reuse_running_bridge`) and never compares the mode. The gateway rejected
+  Sofia as unauthorized, because the allowlist is read live and nothing was
+  sent to her, but the bridge was running in the wrong mode.
+- Killing an adopted bridge does not bring it back: the gateway holds no
+  process handle for it and logged nothing. Only a gateway restart spawned a
+  fresh self-chat bridge (00:12).
+
+Fix: `sequenced_reload` now stops the listener on the bridge port once the old
+gateway is gone and before the new one starts. It stops the process only if it
+really is `whatsapp-bridge/bridge.js`. The replacement then always spawns a
+bridge in the mode that is currently in `.env`.
+
+Still open, and by design: a mode switch is a full gateway restart. Messages
+that arrive during the drain or the restart are dropped, and under heavy load
+the restart takes minutes. A stand-in should therefore not be announced as
+live until a bot-mode bridge is actually connected.
