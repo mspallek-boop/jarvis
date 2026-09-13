@@ -42,5 +42,5 @@ def test_the_text_comes_from_the_plugin_report(monkeypatch):
                         Path(__file__).resolve().parents[1] / "hermes-plugin/jarvis_calories/report.py")
     text = balance.format_balance({"date": "2026-09-10", "total_calories": 566, "entries": [],
                                    "entry_count": 0, "total_sugar_g": 19.6})
-    assert text.startswith("*Tagesbilanz – Donnerstag, 10. September 2026*")
-    assert "566 kcal" in text and "nicht erfasst" in text
+    assert text.startswith("🍽️ *Tagesbilanz · Do 10.09.2026*")
+    assert "*566 kcal*" in text and "🍬 Zucker 19,6 g" in text and "nicht erfasst" in text

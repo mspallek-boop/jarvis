@@ -158,7 +158,7 @@ def test_tracker_migrates_existing_diary_without_losing_entries(tmp_path):
     assert summary["total_sugar_g"] == 8.5
 
 
-def test_daily_balance_report_has_date_table_badges_and_all_entries():
+def test_daily_balance_report_has_headline_macros_activity_and_all_entries():
     report = format_daily_balance({
         "date": "2026-09-09", "total_calories": 1850, "target_calories": 2200,
         "remaining_calories": 350, "total_protein_g": 132.5, "total_fat_g": 58,
@@ -167,15 +167,24 @@ def test_daily_balance_report_has_date_table_badges_and_all_entries():
         "entries": [{"description": "Greek yogurt"}, {"description": "Lentil bowl"}, {"description": "Protein shake"}],
     })
 
-    assert report.startswith("*Tagesbilanz – Mittwoch, 9. September 2026*")
-    assert "Wert             Heute" in report
-    assert "Kalorien         1.850 kcal" in report
-    assert "Eiweiß           132,5 g" in report
-    assert "Zucker           42,5 g" in report
-    assert "[KALORIENZIEL: IM RAHMEN]" in report
-    assert "[NÄHRWERTE: VOLLSTÄNDIG]" in report
-    assert "[AKTIVITÄT ERFASST]" in report
-    assert report.endswith("Erfasst (3): Greek yogurt; Lentil bowl; Protein shake")
+    assert report.startswith("🍽️ *Tagesbilanz · Mi 09.09.2026*")
+    assert "*1.850* / 2.200 kcal   ✅ 350 übrig" in report
+    assert "*Makros*\n🥩 Eiweiß 132,5 g\n🍞 KH 190 g\n🧈 Fett 58 g\n🍬 Zucker 42,5 g" in report
+    assert "*Aktivität*\n🔥 Aktivität 320 kcal · Netto 1.530 kcal\n👟 8.421 Schritte" in report
+    assert "```" not in report
+    assert report.endswith("*Erfasst (3)*\n• Greek yogurt\n• Lentil bowl\n• Protein shake")
+
+
+def test_daily_balance_report_flags_going_over_target_and_skips_empty_activity():
+    report = format_daily_balance({
+        "date": "2026-09-09", "total_calories": 2450, "target_calories": 2200,
+        "remaining_calories": -250, "entries": [],
+    })
+
+    assert "*2.450* / 2.200 kcal   ⚠️ 250 über Ziel" in report
+    assert "🥩 Eiweiß nicht erfasst" in report
+    assert "*Aktivität*" not in report
+    assert report.endswith("*Erfasst (0)*\nkeine Lebensmittel oder Getränke")
 
 
 def test_daily_report_tool_returns_the_formatted_message(monkeypatch):
@@ -186,8 +195,9 @@ def test_daily_report_tool_returns_the_formatted_message(monkeypatch):
     }""")
 
     report = calorie_tools.calories_daily_report({"date": "2026-09-09"})
-    assert "*Tagesbilanz – Mittwoch, 9. September 2026*" in report
-    assert "Erfasst (1): tea" in report
+    assert report.startswith("🍽️ *Tagesbilanz · Mi 09.09.2026*")
+    assert "*300* / 2.000 kcal   ✅ 1.700 übrig" in report
+    assert report.endswith("*Erfasst (1)*\n• tea")
 
 
 def test_day_summary_omits_activity_fields_when_nothing_synced(tmp_path):
