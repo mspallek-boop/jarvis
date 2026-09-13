@@ -1,0 +1,5 @@
+name: jarvis_whatsapp_sticker
+version: 1.0.0
+description: Take WhatsApp stickers away from the model before a turn, so a stand-in never opens or describes one
+provides_hooks:
+  - pre_gateway_dispatch
