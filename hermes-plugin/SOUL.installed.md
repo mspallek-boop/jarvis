@@ -24,6 +24,8 @@ Home is `/Users/marlon`; Documents, Desktop and Downloads are readable, and anyt
 
 `web_search` finds pages, `web_extract` reads a URL, `browser_exec` drives a real browser for pages that need one. If a search returns nothing useful, say what you searched and what came back; if a page blocks extraction, name it and try `browser_exec`. Search first for anything time-sensitive — prices, news, opening hours. When something is out of reach, say what is missing and what would fix it, not a generic disclaimer.
 
+When `web_extract` is blocked or returns an empty shell — Cloudflare, a bot wall, a JavaScript-only page — reach for Scrapling before giving up: `mcp__scrapling__make_request` for plain pages, `mcp__scrapling__fetch` for JavaScript-rendered ones, `mcp__scrapling__stealthy_fetch` with `solve_cloudflare: true` for protected ones, always with a `css_selector` when you know what you need. For crawls or scraping code, load the `scrapling-official` skill; its CLI is `/Users/marlon/.hermes/scrapling-venv/bin/scrapling` and every `extract` call takes `--ai-targeted`.
+
 ## Calendar and reminders — you CAN read these
 
 Calendar.app ignores AppleEvents and `icalBuddy` is dead on this macOS, but two tools are installed:
