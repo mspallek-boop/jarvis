@@ -92,7 +92,8 @@ GATEWAY_LOG = Path(os.environ.get("JARVIS_GATEWAY_LOG",
 BRIDGE_LOG = Path(os.environ.get("JARVIS_WA_BRIDGE_LOG",
                                  HOME / ".hermes/whatsapp/bridge.log"))
 # How long a stand-in may wait for receiving to come up before it is called off.
-# Switching receiving on is a full gateway restart, and under load that has
+# Switching receiving on restarts only the WhatsApp bridge, in seconds. The
+# ceiling is for the fallback, a full gateway restart, which under load has
 # taken five minutes.
 LIVE_WAIT_SECONDS = 15 * 60
 SESSION_DIR = Path(os.environ.get("JARVIS_WA_SESSION",
@@ -482,8 +483,9 @@ def ensure_mode_matches(state: dict, now: float) -> None:
         return
     wanted = running | owner_ids()
     longest = longest_until(state)
-    # Slack on the clock, because switching the mode restarts the gateway: that
-    # belongs where the window is genuinely short, not on every poll tick.
+    # Slack on the clock, because switching the mode restarts the bridge (and, if
+    # that fails, the gateway): that belongs where the window is genuinely
+    # short, not on every poll tick.
     if allowlist() == wanted and mode_expiry() >= longest - 120:
         return
     switch_receiving_on(sorted(running), (longest - now) / 3600)
@@ -498,7 +500,7 @@ def receiving_off_if_last(state: dict) -> None:
     if active_keys(state):
         return
     if not mode_is_bot():
-        return   # already off; switching again would restart the gateway for nothing
+        return   # already off; switching again would restart the bridge for nothing
     try:
         subprocess.run([sys.executable, str(MODE_SCRIPT), "off"],
                        check=False, capture_output=True, timeout=130)
@@ -524,7 +526,7 @@ def bridge_log_size() -> int:
 def receiving_live(key: str, offset: int) -> bool:
     """Has a bot-mode bridge with this contact on its list connected since `offset`?
 
-    Switching receiving on only writes the env and asks for a gateway restart.
+    Switching receiving on only writes the env and asks for a new bridge.
     Until a new bridge has started in bot mode and connected, the contact's
     messages are dropped, so "Vertretung läuft" before that is a promise nobody
     keeps. On 2026-09-14 a whole test stand-in passed that way. The bridge log
@@ -630,8 +632,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not switch_receiving_on(sorted(set(state["standins"]) | {key}), window):
         return 1
 
-    # Not live yet, and not announced yet: the switch only asked for a gateway
-    # restart, which waits for this very turn to finish and can take minutes.
+    # Not live yet, and not announced yet: the switch only asked for a new
+    # bridge, which takes seconds, or in the fallback a gateway restart, which
+    # waits for this very turn to finish and can take minutes.
     # The poller announces and reports once a bridge can really hear the
     # contact (`activate_pending`).
     state["standins"][key] = {

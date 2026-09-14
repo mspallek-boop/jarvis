@@ -288,3 +288,51 @@ Still open, and by design: a mode switch is a full gateway restart. Messages
 that arrive during the drain or the restart are dropped, and under heavy load
 the restart takes minutes. A stand-in should therefore not be announced as
 live until a bot-mode bridge is actually connected.
+
+## Addendum 2026-09-14: a mode switch restarts only the bridge
+
+The previous addendum left one thing open by design: every switch was a full
+gateway restart. API turns running in the app were cut off
+("Operation interrupted"), and the app lost Hermes for one to three minutes.
+
+Only the bridge needs the new mode. It is spawned with `--mode` and the
+allowlist from the gateway's environment, and Hermes already respawns a bridge
+that dies: SIGTERM on the bridge alone was answered with "whatsapp reconnected
+successfully" within five seconds, with the same gateway pid and the API
+answering throughout. The gateway reads `.env` only at start, though
+(`reload_env()` is called by the interactive CLI, never by the gateway), so a
+bare bridge restart came back in the old mode.
+
+Fix, in two halves:
+
+- `hermes-plugin/jarvis_whatsapp_mode_reload` runs a watcher thread in the
+  gateway process only. It answers `~/.hermes/jarvis-whatsapp-reload.request`
+  by copying the four managed keys from `.env` into `os.environ` (removing any
+  the file no longer has) and writes an acknowledgement with the request id
+  and the mode. It never reads the rest of `.env`. `.alive` carries its pid.
+- `scripts/jarvis-whatsapp-mode.py`, `restart_gateway()`: first
+  `reload_bridge_in_place()`. That checks `.alive` belongs to a live
+  `gateway run`, writes the request, waits up to 10s for a matching
+  acknowledgement, stops only the bridge, and waits up to 60s for a new
+  bridge.js whose `--mode` is the expected one. Anything short of that returns
+  False, and the old sequenced restart runs, so "off" still ends in self-chat.
+  Hidden command `_bridge_reload` runs the in-place path on its own.
+
+The default profile's WhatsApp adapter runs without a secret scope
+(`_scope_or_null`), so it reads `os.environ` and sees the refreshed values.
+A secondary profile that owned WhatsApp would read its scope instead, and this
+would not reach it: the mode check then fails and the full restart takes over.
+
+Verified live on 2026-09-14, all in self-chat:
+- `_bridge_reload`: 4s, zero non-200 answers from the API polled every 0.5s,
+  gateway pid 16027 unchanged, the acknowledgement came from 16027.
+- `WHATSAPP_DEBUG` absent, then `1`, then absent again, each followed by
+  `_bridge_reload`: the respawned bridges showed absent, `1`, absent in their
+  process environment. `.env` was restored.
+
+Not tested live: a real switch to bot mode for a contact, since that answers a
+real person. The unit tests cover the switch, the missing acknowledgement, and a
+bridge that returns in the wrong mode.
+
+The plugin must be enabled in `~/.hermes/config.yaml` (`plugins.enabled`).
+Without it, `.alive` is missing and every switch uses the full restart as before.

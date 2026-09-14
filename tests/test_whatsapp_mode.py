@@ -25,6 +25,8 @@ def mode(tmp_path, monkeypatch):
     env.chmod(0o600)
     monkeypatch.setenv("JARVIS_WA_ENV", str(env))
     monkeypatch.setenv("JARVIS_WA_MODE_STATE", str(tmp_path / "mode.json"))
+    # The in-place switch talks to a real gateway plugin through these files.
+    monkeypatch.setenv("JARVIS_WA_RELOAD_DIR", str(tmp_path))
     spec = importlib.util.spec_from_file_location(
         "wa_mode", ROOT / "scripts" / "jarvis-whatsapp-mode.py")
     module = importlib.util.module_from_spec(spec)
@@ -503,3 +505,81 @@ def test_the_reload_stops_the_bridge_so_the_new_mode_takes_effect(mode, monkeypa
     mode.sequenced_reload()
     assert killed == [(4242, mode.signal.SIGTERM)]
     assert order.index("launchctl kill") < order.index("ps") < order.index("launchctl kickstart")
+
+
+# ------------------------------------------------- switching without a restart
+
+def in_place_shell(mode, monkeypatch, tmp_path, *, new_bridge_mode, acknowledge=True):
+    """A gateway running the reload plugin, and a bridge on :3000 that Hermes respawns.
+
+    Bridge 100 is the one running now; once it has been signalled, Hermes'
+    replacement 200 holds the port, spawned with `new_bridge_mode`.
+    """
+    (tmp_path / "jarvis-whatsapp-reload.alive").write_text(json.dumps({"pid": 4242}))
+    state = {"killed": [], "argv": []}
+    commands = {
+        "4242": "python -m hermes_cli.main gateway run --external-supervisor",
+        "100": "node /x/whatsapp-bridge/bridge.js --port 3000 --mode self-chat",
+        "200": f"node /x/whatsapp-bridge/bridge.js --port 3000 --mode {new_bridge_mode}",
+    }
+
+    def fake_run(argv, **kwargs):
+        argv = list(argv)
+        state["argv"].append(argv)
+        out = ""
+        if argv[:1] == ["lsof"]:
+            out = "200\n" if state["killed"] else "100\n"
+        elif argv[:1] == ["ps"]:
+            out = commands.get(argv[-1], "")
+        return type("Done", (), {"returncode": 0, "stdout": out})()
+
+    def fake_sleep(_seconds):
+        # The plugin's side: answer a pending request with the mode now in .env.
+        request = tmp_path / "jarvis-whatsapp-reload.request"
+        if acknowledge and request.exists():
+            request_id = json.loads(request.read_text())["id"]
+            (tmp_path / "jarvis-whatsapp-reload.ack").write_text(json.dumps(
+                {"id": request_id, "mode": mode.read_env().get("WHATSAPP_MODE", "self-chat")}))
+
+    monkeypatch.setattr(mode.subprocess, "run", fake_run)
+    monkeypatch.setattr(mode.time, "sleep", fake_sleep)
+    monkeypatch.setattr(mode.os, "kill", lambda pid, sig: state["killed"].append(pid))
+    monkeypatch.setattr(mode, "ACK_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(mode, "BRIDGE_WAIT_SECONDS", 0.5)
+    return state
+
+
+def test_a_live_gateway_takes_the_switch_without_a_restart(mode, monkeypatch, tmp_path):
+    """Only the bridge restarts; the gateway, its API and the app's running turns stay up."""
+    mode.write_env({"WHATSAPP_MODE": "bot"})
+    state = in_place_shell(mode, monkeypatch, tmp_path, new_bridge_mode="bot")
+    assert mode._real_restart_gateway() is True
+    assert mode.LAST_SWITCH == "in-place"
+    assert state["killed"] == [100]
+    assert not any(argv[:1] == ["launchctl"] for argv in state["argv"])
+    assert mode.restart_message(True) == "WhatsApp neu verbunden, ohne Gateway-Neustart."
+
+
+def test_a_gateway_that_does_not_answer_gets_the_full_restart(mode, monkeypatch, tmp_path):
+    """No acknowledgement means the bridge is left alone and the old path does the switch."""
+    mode.write_env({"WHATSAPP_MODE": "bot"})
+    state = in_place_shell(mode, monkeypatch, tmp_path, new_bridge_mode="bot", acknowledge=False)
+    monkeypatch.setattr(mode, "GATEWAY_PLIST", tmp_path / "missing.plist")
+    assert mode._real_restart_gateway() is True
+    assert state["killed"] == []
+    assert mode.LAST_SWITCH == "restart"
+    assert any("gateway" in argv and "restart" in argv for argv in state["argv"])
+
+
+def test_a_bridge_back_in_the_old_mode_is_not_a_finished_switch(mode, monkeypatch, tmp_path):
+    """"off" must end in self-chat: a bridge that returns in the wrong mode is a failure."""
+    mode.write_env({"WHATSAPP_MODE": "bot"})
+    state = in_place_shell(mode, monkeypatch, tmp_path, new_bridge_mode="self-chat")
+    assert mode.reload_bridge_in_place() is False
+    assert state["killed"] == [100]
+
+
+def test_a_plugin_file_from_a_gone_gateway_does_not_count(mode, monkeypatch, tmp_path):
+    in_place_shell(mode, monkeypatch, tmp_path, new_bridge_mode="bot")
+    (tmp_path / "jarvis-whatsapp-reload.alive").write_text(json.dumps({"pid": 999}))
+    assert mode.reload_gateway_pid() is None

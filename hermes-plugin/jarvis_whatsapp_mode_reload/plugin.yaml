@@ -1,0 +1,4 @@
+name: jarvis_whatsapp_mode_reload
+version: 1.0.0
+description: Take a new WhatsApp receive mode into the running gateway, so switching it restarts only the bridge
+provides_hooks: []

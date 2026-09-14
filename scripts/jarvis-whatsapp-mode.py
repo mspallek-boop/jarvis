@@ -155,6 +155,21 @@ BRIDGE_PORT = int(os.environ.get("JARVIS_WA_BRIDGE_PORT", "3000"))
 # only writes the stamp while it is trying, and clears it when it gives up.
 RESTART_STAMP = Path(os.environ.get("JARVIS_RESTART_STAMP",
                                     Path.home() / ".hermes/jarvis-gateway-restart.stamp"))
+# The gateway half of a switch without a restart lives in
+# hermes-plugin/jarvis_whatsapp_mode_reload: it answers a request file by taking
+# the managed .env keys into the running process.
+RELOAD_DIR = Path(os.environ.get("JARVIS_WA_RELOAD_DIR", HOME / ".hermes"))
+RELOAD_REQUEST = RELOAD_DIR / "jarvis-whatsapp-reload.request"
+RELOAD_ACK = RELOAD_DIR / "jarvis-whatsapp-reload.ack"
+RELOAD_ALIVE = RELOAD_DIR / "jarvis-whatsapp-reload.alive"
+# The plugin polls every second; a gateway that has not answered in ten is not
+# going to, and the full restart is the safer use of the time.
+ACK_WAIT_SECONDS = 10.0
+# Hermes respawned a stopped bridge in about five seconds on 2026-09-14. A
+# minute leaves room for its reconnect backoff under load.
+BRIDGE_WAIT_SECONDS = 60.0
+# How the last restart_gateway() got there: "in-place" or "restart".
+LAST_SWITCH = "restart"
 
 
 def api_listeners() -> set:
@@ -288,6 +303,28 @@ def await_api_sockets_gone(seconds: float, states=None) -> bool:
     return False
 
 
+def bridge_listeners() -> dict[str, str]:
+    """pid -> command line of every whatsapp-bridge/bridge.js holding the bridge port."""
+    found: dict[str, str] = {}
+    try:
+        done = subprocess.run(["lsof", "-t", "-nP", f"-iTCP:{BRIDGE_PORT}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return found
+    for pid in (getattr(done, "stdout", None) or "").split():
+        if not pid.isdigit():
+            continue
+        try:
+            shown = subprocess.run(["ps", "-o", "command=", "-p", pid],
+                                   capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        command = getattr(shown, "stdout", None) or ""
+        if "whatsapp-bridge/bridge.js" in command:
+            found[pid] = command.strip()
+    return found
+
+
 def stop_bridge() -> None:
     """Stop the WhatsApp bridge, so the next gateway spawns one in the new mode.
 
@@ -299,22 +336,9 @@ def stop_bridge() -> None:
     contact on its list, and "on" had an old self-chat bridge drop the contact's
     messages. Only a process that really is bridge.js is touched.
     """
-    try:
-        done = subprocess.run(["lsof", "-t", "-nP", f"-iTCP:{BRIDGE_PORT}", "-sTCP:LISTEN"],
-                              capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
-        return
-    for pid in (getattr(done, "stdout", None) or "").split():
-        if not pid.isdigit():
-            continue
-        try:
-            shown = subprocess.run(["ps", "-o", "command=", "-p", pid],
-                                   capture_output=True, text=True, timeout=15)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if "whatsapp-bridge/bridge.js" in (getattr(shown, "stdout", None) or ""):
-            with contextlib.suppress(OSError):
-                os.kill(int(pid), signal.SIGTERM)
+    for pid in bridge_listeners():
+        with contextlib.suppress(OSError):
+            os.kill(int(pid), signal.SIGTERM)
 
 
 def sequenced_reload() -> int:
@@ -374,6 +398,100 @@ def _spawn_detached_reload() -> bool:
         return False
 
 
+# ------------------------------------------------- switching without a restart
+
+def reload_gateway_pid() -> int | None:
+    """The running gateway that can take a switch in place, or None.
+
+    The plugin writes its pid when the gateway loads it. A file left behind by
+    a gateway that is gone must not count, so the pid has to belong to a live
+    `gateway run` process.
+    """
+    try:
+        pid = int(json.loads(RELOAD_ALIVE.read_text())["pid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    try:
+        shown = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                               capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    command = (getattr(shown, "stdout", None) or "").split()
+    return pid if "gateway" in command and "run" in command else None
+
+
+def request_env_reload(expected_mode: str, seconds: float) -> bool:
+    """Ask the gateway to take the managed .env keys; True once it confirms that mode."""
+    request_id = os.urandom(8).hex()
+    tmp = RELOAD_REQUEST.with_suffix(".request.tmp")
+    try:
+        tmp.write_text(json.dumps({"id": request_id, "at": time.time()}))
+        os.chmod(tmp, 0o600)
+        tmp.replace(RELOAD_REQUEST)
+    except OSError:
+        return False
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            ack = json.loads(RELOAD_ACK.read_text())
+        except (OSError, ValueError):
+            ack = None
+        if isinstance(ack, dict) and ack.get("id") == request_id:
+            return ack.get("mode") == expected_mode
+        time.sleep(0.5)
+    return False
+
+
+def bridge_mode(command: str) -> str | None:
+    parts = command.split()
+    if "--mode" in parts and parts.index("--mode") + 1 < len(parts):
+        return parts[parts.index("--mode") + 1]
+    return None
+
+
+def await_bridge_in_mode(old: set, expected_mode: str, seconds: float) -> bool:
+    """Wait for a bridge that was not running before, spawned with the expected mode."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        for pid, command in bridge_listeners().items():
+            if pid not in old and bridge_mode(command) == expected_mode:
+                return True
+        time.sleep(1.0)
+    return False
+
+
+def reload_bridge_in_place() -> bool:
+    """Switch WhatsApp by restarting only the bridge. False means: do the full restart.
+
+    The mode lives in the bridge, which is spawned with it; the gateway only
+    needs the new value in its own environment before Hermes respawns the
+    bridge. Restarting the gateway for that cut off every API turn running in
+    the app and took Hermes away from it for minutes. Here the gateway, its API
+    port and those turns stay up.
+
+    The result is checked on the process itself, not taken on trust: the new
+    bridge must run with the expected `--mode`. Anything short of that returns
+    False, and the caller falls back to the full restart, so "off" still ends
+    in self-chat when this path cannot deliver.
+    """
+    if reload_gateway_pid() is None:
+        return False
+    expected = read_env().get("WHATSAPP_MODE", "self-chat")
+    if not request_env_reload(expected, ACK_WAIT_SECONDS):
+        return False
+    old = set(bridge_listeners())
+    stop_bridge()
+    return await_bridge_in_mode(old, expected, BRIDGE_WAIT_SECONDS)
+
+
+def restart_message(ok: bool) -> str:
+    if not ok:
+        return "ACHTUNG: Gateway-Neustart fehlgeschlagen — 'hermes gateway restart' von Hand."
+    if LAST_SWITCH == "in-place":
+        return "WhatsApp neu verbunden, ohne Gateway-Neustart."
+    return "Gateway neu gestartet."
+
+
 def restart_gateway() -> bool:
     """Reload the gateway after a mode change, without dropping the API port.
 
@@ -391,6 +509,12 @@ def restart_gateway() -> bool:
     launched, fall back to the atomic `kickstart -k` with reactive retry, then
     the CLI.
     """
+    global LAST_SWITCH
+    LAST_SWITCH = "restart"
+    # First the switch without a restart; everything below is the fallback.
+    if reload_bridge_in_place():
+        LAST_SWITCH = "in-place"
+        return True
     if GATEWAY_PLIST.exists() and _spawn_detached_reload():
         note_restart_request()
         return True
@@ -509,8 +633,7 @@ def cmd_on(args) -> int:
         write_env({"WHATSAPP_ALLOWED_USERS": ",".join(sorted(set(existing) | {MORRIS_CONTACT}))})
         ok = restart_gateway()
         print(describe(read_env(), load_state()))
-        print("Gateway neu gestartet." if ok else
-              "ACHTUNG: Gateway-Neustart fehlgeschlagen — 'hermes gateway restart' von Hand.")
+        print(restart_message(ok))
         return 0 if ok else 1
     if env.get("WHATSAPP_MODE") != "bot":
         # Only the first activation records the truth; a second `on` must not
@@ -544,8 +667,7 @@ def cmd_on(args) -> int:
     })
     ok = restart_gateway()
     print(describe(read_env(), load_state()))
-    print("Gateway neu gestartet." if ok else
-          "ACHTUNG: Gateway-Neustart fehlgeschlagen — 'hermes gateway restart' von Hand.")
+    print(restart_message(ok))
     return 0 if ok else 1
 
 
@@ -583,8 +705,16 @@ def cmd_off(_args) -> int:
     save_state({})
     ok = restart_gateway()
     print(describe(read_env(), {}))
-    print("Gateway neu gestartet." if ok else
-          "ACHTUNG: Gateway-Neustart fehlgeschlagen — 'hermes gateway restart' von Hand.")
+    print(restart_message(ok))
+    return 0 if ok else 1
+
+
+def cmd_bridge_reload(_args) -> int:
+    """Hidden: restart only the bridge with the current .env (no mode change)."""
+    ok = reload_bridge_in_place()
+    print("WhatsApp neu verbunden, ohne Gateway-Neustart." if ok else
+          "Ohne Neustart nicht möglich: Plugin fehlt, keine Antwort vom Gateway, "
+          "oder die Bridge kam nicht im erwarteten Modus zurück.")
     return 0 if ok else 1
 
 
@@ -642,6 +772,8 @@ def main() -> int:
 
     # Hidden: detached sequenced restart, spawned by restart_gateway itself.
     sub.add_parser("_reload").set_defaults(func=cmd_reload)
+    # Hidden: the switch without a restart, run on its own (used to verify it).
+    sub.add_parser("_bridge_reload").set_defaults(func=cmd_bridge_reload)
 
     args = parser.parse_args()
     if not hasattr(args, "verbose"):
