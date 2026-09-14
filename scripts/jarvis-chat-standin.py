@@ -87,6 +87,14 @@ OFFER_COOLDOWN_SECONDS = 12 * 3600
 # gateway itself, so a second reader there would steal messages.
 GATEWAY_LOG = Path(os.environ.get("JARVIS_GATEWAY_LOG",
                                   HOME / ".hermes/logs/gateway.log"))
+# The WhatsApp bridge prints its mode and allowlist when it starts. That is the
+# only proof a stand-in has that the contact can actually be heard.
+BRIDGE_LOG = Path(os.environ.get("JARVIS_WA_BRIDGE_LOG",
+                                 HOME / ".hermes/whatsapp/bridge.log"))
+# How long a stand-in may wait for receiving to come up before it is called off.
+# Switching receiving on is a full gateway restart, and under load that has
+# taken five minutes.
+LIVE_WAIT_SECONDS = 15 * 60
 SESSION_DIR = Path(os.environ.get("JARVIS_WA_SESSION",
                                   HOME / ".hermes/whatsapp/session"))
 GATEWAY_LABEL = os.environ.get("JARVIS_GATEWAY_LABEL", "ai.hermes.gateway")
@@ -506,6 +514,75 @@ def finish(state: dict, key: str, standin: dict, now: float, closing: str) -> No
     state["standins"].pop(key, None)
 
 
+def bridge_log_size() -> int:
+    try:
+        return BRIDGE_LOG.stat().st_size
+    except OSError:
+        return 0
+
+
+def receiving_live(key: str, offset: int) -> bool:
+    """Has a bot-mode bridge with this contact on its list connected since `offset`?
+
+    Switching receiving on only writes the env and asks for a gateway restart.
+    Until a new bridge has started in bot mode and connected, the contact's
+    messages are dropped, so "Vertretung läuft" before that is a promise nobody
+    keeps. On 2026-09-14 a whole test stand-in passed that way. The bridge log
+    carries no timestamps, so only what was written after the stand-in started
+    counts. Every switch starts a fresh bridge (the mode script stops the old
+    one), so a matching header is always there to find.
+    """
+    try:
+        size = BRIDGE_LOG.stat().st_size
+        with BRIDGE_LOG.open("rb") as handle:
+            handle.seek(offset if 0 <= offset <= size else 0)
+            chunk = handle.read(MAX_LOG_READ).decode("utf-8", "replace")
+    except OSError:
+        return False
+    bot = listed = live = False
+    for line in chunk.splitlines():
+        if "bridge listening on port" in line:
+            bot, listed, live = "(mode: bot)" in line, False, False
+        elif "Allowed users:" in line:
+            listed = bot and key in re.findall(r"\d+", line)
+        elif "WhatsApp connected!" in line:
+            live = bot and listed
+    return live
+
+
+def activate_pending(state: dict, now: float) -> bool:
+    """Make a stand-in that is being set up live once it can hear, or call it off.
+
+    The announcement belongs here, not in `start`: telling someone an assistant
+    answers while their messages are still dropped is worse than no stand-in.
+    If it cannot be delivered, the stand-in does not begin, same rule as before.
+    """
+    changed = False
+    for key, standin in list(state["standins"].items()):
+        if standin.get("live", True):
+            continue
+        name = standin.get("name") or key
+        if receiving_live(key, int(standin.get("bridge_offset") or 0)):
+            hours = float(standin.get("hours") or 0) or max(0.0, standin.get("until", now) - now) / 3600
+            if standin.get("announce") and not tell_contact(key, opening_line(hours)):
+                del state["standins"][key]
+                deliver(name, "Die Ansage an den Kontakt ging nicht raus. Vertretung nicht gestartet.",
+                        speak=True)
+                changed = True
+                continue
+            standin.update(live=True, announced=bool(standin.get("announce")), last_report=now)
+            until = time.strftime("%H:%M", time.localtime(standin.get("until", now)))
+            told = "Kontakt ist informiert" if standin["announced"] else "Kontakt weiß nichts davon"
+            deliver(name, f"Vertretung läuft jetzt, bis {until}. {told}.", speak=True)
+            changed = True
+        elif now - standin.get("started", now) >= LIVE_WAIT_SECONDS:
+            del state["standins"][key]
+            deliver(name, "Der WhatsApp-Empfang kam nicht zustande. Vertretung abgebrochen.",
+                    speak=True)
+            changed = True
+    return changed
+
+
 def cmd_offer(args: argparse.Namespace) -> int:
     """Should JARVIS suggest a stand-in for this chat right now?
 
@@ -548,20 +625,24 @@ def cmd_start(args: argparse.Namespace) -> int:
     # mode timer is global, so a short request here would cut an already
     # running stand-in short.
     window = max(hours, (longest_until(state) - now) / 3600)
+    # Before the switch: the new bridge's startup lines land after this point.
+    offset = bridge_log_size()
     if not switch_receiving_on(sorted(set(state["standins"]) | {key}), window):
         return 1
 
-    if args.announce and not tell_contact(key, opening_line(hours)):
-        receiving_off_if_last(state)
-        print("Die Ansage an den Kontakt ging nicht raus — Vertretung nicht gestartet.",
-              file=sys.stderr)
-        return 1
-
+    # Not live yet, and not announced yet: the switch only asked for a gateway
+    # restart, which waits for this very turn to finish and can take minutes.
+    # The poller announces and reports once a bridge can really hear the
+    # contact (`activate_pending`).
     state["standins"][key] = {
         "name": args.name or key,
         "started": now,
         "until": now + hours * 3600,
-        "announced": bool(args.announce),
+        "hours": hours,
+        "announce": bool(args.announce),
+        "announced": False,
+        "live": False,
+        "bridge_offset": offset,
         "pending": [],
         "history": [],
         "inbound": [],
@@ -570,10 +651,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         "reported": 0,
     }
     save(state)
-    until = time.strftime("%H:%M", time.localtime(now + hours * 3600))
-    told = "Kontakt ist informiert" if args.announce else "Kontakt weiß nichts davon"
-    print(f"Vertretung läuft: {state['standins'][key]['name']} bis {until} "
-          f"({human_duration(hours)}). {told}.")
+    told = ("Die Ansage an den Kontakt geht erst raus, wenn der Empfang steht."
+            if args.announce else "Der Kontakt erfährt nichts davon.")
+    print(f"Vertretung für {state['standins'][key]['name']} wird eingerichtet "
+          f"({human_duration(hours)}). Der WhatsApp-Empfang startet dafür neu, meist "
+          f"in ein bis zwei Minuten, unter Last länger. {told} Sobald sie wirklich "
+          f"läuft, kommt eine Meldung in die App. Bis dahin nicht als laufend ansagen.")
     return 0
 
 
@@ -874,6 +957,8 @@ def cmd_poll(_args: argparse.Namespace) -> int:
     now = time.time()
     state = load()
     changed = scan_gateway_log(state, now)
+    if activate_pending(state, now):
+        changed = True
     for key, standin in list(state["standins"].items()):
         if now >= standin.get("until", 0):
             finish(state, key, standin, now,
@@ -899,7 +984,8 @@ def cmd_status(_args: argparse.Namespace) -> int:
     for key, standin in state["standins"].items():
         left = max(0, standin.get("until", 0) - now) / 60
         told = "angesagt" if standin.get("announced") else "nicht angesagt"
-        print(f"{standin.get('name') or key} ({key}) — noch {left:.0f} Min, {told}, "
+        phase = "" if standin.get("live", True) else "wird eingerichtet, Empfang noch nicht bereit, "
+        print(f"{standin.get('name') or key} ({key}) — {phase}noch {left:.0f} Min, {told}, "
               f"{standin.get('exchanges', 0)} Nachrichten, "
               f"{len(standin.get('pending', []))} ungemeldet, "
               f"Takt {report_interval(standin, now) / 60:.0f} Min")

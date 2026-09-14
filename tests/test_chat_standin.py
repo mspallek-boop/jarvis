@@ -19,6 +19,7 @@ def load(tmp_path, monkeypatch):
     monkeypatch.setenv("JARVIS_HERMES_ENV", str(tmp_path / "env"))
     monkeypatch.setenv("JARVIS_OWNER_NAME", "Marlon")
     monkeypatch.setenv("JARVIS_RESTART_STAMP", str(tmp_path / "restart.stamp"))
+    monkeypatch.setenv("JARVIS_WA_BRIDGE_LOG", str(tmp_path / "bridge.log"))
     spec = importlib.util.spec_from_file_location(
         "chat_standin", ROOT / "scripts" / "jarvis-chat-standin.py")
     module = importlib.util.module_from_spec(spec)
@@ -72,13 +73,32 @@ def test_a_standin_needs_one_real_number(tmp_path, monkeypatch):
     assert module.load()["standins"] == {}
 
 
-def test_announcing_tells_the_contact_once_and_names_the_duration(tmp_path, monkeypatch):
-    module, _, told = load(tmp_path, monkeypatch)
+BOT_UP = ("🌉 WhatsApp bridge listening on port 3000 (mode: bot)",
+          "🔒 Allowed users: 4915129577496, " + KEY,
+          "✅ WhatsApp connected!")
+
+
+def bridge_says(module, *lines):
+    with module.BRIDGE_LOG.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def test_announcing_tells_the_contact_once_receiving_is_up(tmp_path, monkeypatch):
+    """The announcement waits for a bridge that can hear the contact.
+
+    Telling someone an assistant answers while their messages are still dropped
+    is the promise the 2026-09-14 test stand-in broke.
+    """
+    module, sent, told = load(tmp_path, monkeypatch)
     assert run(module, "start", KEY, "--name", "Marie", "--for", "2h", "--announce") == 0
+    assert told == [] and module.load()["standins"][KEY]["announced"] is False
+    bridge_says(module, *BOT_UP)
+    run(module, "poll")
     assert len(told) == 1
     text = told[0][1]
     assert "KI-Assistent" in text and "2 Stunden" in text and "Marlon" in text
     assert module.load()["standins"][KEY]["announced"] is True
+    assert "läuft" in sent[-1][1]
 
 
 def test_not_announcing_says_nothing_to_the_contact(tmp_path, monkeypatch):
@@ -90,10 +110,13 @@ def test_not_announcing_says_nothing_to_the_contact(tmp_path, monkeypatch):
 
 def test_a_failed_announcement_cancels_the_whole_standin(tmp_path, monkeypatch):
     """Promising transparency and not delivering it is worse than not offering."""
-    module, _, _ = load(tmp_path, monkeypatch)
+    module, sent, _ = load(tmp_path, monkeypatch)
     module.tell_contact = lambda key, text: False
-    assert run(module, "start", KEY, "--for", "1h", "--announce") == 1
+    assert run(module, "start", KEY, "--for", "1h", "--announce") == 0
+    bridge_says(module, *BOT_UP)
+    run(module, "poll")
     assert module.load()["standins"] == {}
+    assert "nicht gestartet" in sent[-1][1]
 
 
 def test_an_announced_standin_says_goodbye_too(tmp_path, monkeypatch):
@@ -897,3 +920,44 @@ def test_a_report_uses_a_kind_the_bridge_accepts(tmp_path, monkeypatch):
     accepted = ast.literal_eval(re.search(r"^NOTIFY_KINDS = (\{.*\})$", source, re.M).group(1))
     kinds = [payload["kind"] for url, payload in posts if url == real.NOTIFY_URL]
     assert len(kinds) == 1 and kinds[0] in accepted
+
+
+# ------------------------------------------------- live only once it can hear
+
+def test_a_standin_is_not_live_before_a_bot_bridge_hears_the_contact(tmp_path, monkeypatch):
+    """Self-chat mode, or bot mode without the contact on the list, still drops her messages."""
+    module, sent, told = load(tmp_path, monkeypatch)
+    run(module, "start", KEY, "--for", "1h", "--no-announce")
+    bridge_says(module, "🌉 WhatsApp bridge listening on port 3000 (mode: self-chat)",
+                "🔒 Allowed users: 4915129577496", "✅ WhatsApp connected!")
+    run(module, "poll")
+    assert module.load()["standins"][KEY]["live"] is False
+    bridge_says(module, "🌉 WhatsApp bridge listening on port 3000 (mode: bot)",
+                "🔒 Allowed users: 4915129577496", "✅ WhatsApp connected!")
+    run(module, "poll")
+    assert module.load()["standins"][KEY]["live"] is False
+    assert not any("läuft" in item[1] for item in sent)
+    bridge_says(module, *BOT_UP)
+    run(module, "poll")
+    assert module.load()["standins"][KEY]["live"] is True
+    assert "läuft" in sent[-1][1] and told == []
+
+
+def test_a_bridge_that_was_up_before_the_start_does_not_count(tmp_path, monkeypatch):
+    """No timestamps in the bridge log: only lines written after the start are evidence."""
+    module, sent, _ = load(tmp_path, monkeypatch)
+    bridge_says(module, *BOT_UP)
+    run(module, "start", KEY, "--for", "1h", "--no-announce")
+    run(module, "poll")
+    assert module.load()["standins"][KEY]["live"] is False
+
+
+def test_receiving_that_never_comes_up_calls_the_standin_off(tmp_path, monkeypatch):
+    module, sent, told = load(tmp_path, monkeypatch)
+    run(module, "start", KEY, "--for", "1h", "--announce")
+    state = module.load()
+    state["standins"][KEY]["started"] -= module.LIVE_WAIT_SECONDS + 1
+    module.save(state)
+    run(module, "poll")
+    assert module.load()["standins"] == {}
+    assert told == [] and "nicht zustande" in sent[-1][1]
