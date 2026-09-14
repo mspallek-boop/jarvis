@@ -436,6 +436,96 @@ class SessionRecoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.stop("../../v1/runs/other/stop")
 
+    @staticmethod
+    def _conflict(code):
+        import io
+        body = json.dumps({"error": {"message": "x", "code": code}}).encode()
+        return urllib.error.HTTPError("http://hermes", 409, "Conflict", {}, io.BytesIO(body))
+
+    def test_stop_before_the_agent_exists_is_remembered_not_an_error(self):
+        """Hermes emits run.started before building the agent and answers a stop
+        in that gap with 409 run_not_active while the run goes on. That must
+        neither reach the app as a gateway error nor claim the run stopped."""
+        with tempfile.TemporaryDirectory() as directory:
+            client = self._client(directory)
+
+            def not_yet(*args, **kwargs):
+                raise self._conflict("run_not_active")
+            client._request = not_yet
+            with client._active_runs_lock:
+                client._client_runs["mine"] = {"run_id": "run_mine", "cancelled": False}
+            result = client.cancel_client_run("mine")
+            self.assertEqual(result["status"], "pending")
+            self.assertFalse(result["stopped"])
+            with client._active_runs_lock:
+                self.assertTrue(client._client_runs["mine"]["stop_pending"])
+
+    def test_pending_stop_is_chased_without_waiting_for_an_event(self):
+        """A model can think for seconds without an event; the stop must not
+        wait for the next one."""
+        import time as _time
+        import unittest.mock as mock
+        import jarvis_bridge
+        with tempfile.TemporaryDirectory() as directory:
+            client = self._client(directory)
+            with client._active_runs_lock:
+                client._client_runs["mine"] = {"run_id": "run_mine", "cancelled": False}
+            answers = iter([{"status": "not_active"}, {"status": "not_active"},
+                            {"status": "stopping"}])
+            calls = []
+            client.stop = lambda rid: calls.append(rid) or next(answers)
+            with mock.patch.object(jarvis_bridge, "PENDING_STOP_RETRY_SECONDS", 0.01):
+                self.assertEqual(client.cancel_client_run("mine")["status"], "pending")
+                deadline = _time.monotonic() + 2
+                while len(calls) < 3 and _time.monotonic() < deadline:
+                    _time.sleep(0.01)
+                _time.sleep(0.05)
+            self.assertEqual(len(calls), 3)
+            with client._active_runs_lock:
+                self.assertFalse(client._client_runs["mine"]["stop_pending"])
+
+    def test_stream_repeats_a_pending_stop_until_hermes_takes_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = self._client(directory)
+            client.config.state_path.write_text(
+                json.dumps({"jarvis-apple": "api_ok"}), encoding="utf-8")
+            with client._active_runs_lock:
+                client._client_runs["mine"] = {"cancelled": True}
+            answers = iter([{"status": "not_active"}, {"status": "stopping"}])
+            calls = []
+            client.stop = lambda rid: calls.append(rid) or next(answers)
+            sse = [
+                b'event: run.started\n', b'data: {"run_id":"run_live"}\n', b'\n',
+                b'event: message.started\n', b'data: {}\n', b'\n',
+                b'event: assistant.delta\n', b'data: {"delta":"x"}\n', b'\n',
+            ]
+
+            class _Stream:
+                def __enter__(self):
+                    return iter(sse)
+
+                def __exit__(self, *exc):
+                    return False
+
+            import unittest.mock as mock
+            with mock.patch("urllib.request.urlopen", return_value=_Stream()):
+                client._chat_once("hi", "jarvis-apple", False, "mine")
+            # refused in the gap at run.started, accepted on the next event,
+            # and not repeated after that
+            self.assertEqual(calls, ["run_live", "run_live"])
+            with client._active_runs_lock:
+                self.assertFalse(client._client_runs["mine"]["stop_pending"])
+
+    def test_other_stop_conflicts_still_raise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = self._client(directory)
+
+            def conflict(*args, **kwargs):
+                raise self._conflict("something_else")
+            client._request = conflict
+            with self.assertRaises(urllib.error.HTTPError):
+                client.stop("run_mine")
+
     def test_failed_run_unbinds_the_dead_run(self):
         """run.failed raises out of the stream. A surviving entry would let a
         later cancel address a dead run."""

@@ -1117,6 +1117,21 @@ def notification_for_app(item: dict) -> dict:
     return out
 
 
+# How often a stop Hermes refused as run_not_active is repeated. The chaser ends
+# on its own once Hermes takes it or the run is over.
+PENDING_STOP_RETRY_SECONDS = 0.25
+
+
+def _hermes_error_code(exc: urllib.error.HTTPError) -> str:
+    """The `error.code` of Hermes' OpenAI-style error body, or "" if unreadable."""
+    try:
+        body = json.loads(exc.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    return str(error.get("code") or "") if isinstance(error, dict) else ""
+
+
 class HermesClient:
     def __init__(self, config: BridgeConfig):
         self.config = config
@@ -1433,6 +1448,8 @@ class HermesClient:
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
                 for event, data in parse_sse(response):
+                    if run_id and client_run_id:
+                        self._retry_pending_stop(client_run_id, run_id)
                     if event == "run.started":
                         run_id = str(data.get("run_id") or "")
                         if run_id and client_run_id:
@@ -1443,10 +1460,10 @@ class HermesClient:
                             # A /stop can land before the run even exists. Honour
                             # it now instead of letting the turn run to the end.
                             if already_cancelled:
-                                try:
-                                    self.stop(run_id)
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                with self._active_runs_lock:
+                                    entry["stop_pending"] = True
+                                self._retry_pending_stop(client_run_id, run_id)
+                                self._chase_pending_stop(client_run_id, run_id)
                     elif event == "assistant.delta":
                         self._set_activity(client_run_id, "answering")
                         delta = str(data.get("delta") or "")
@@ -1576,6 +1593,14 @@ class HermesClient:
             return {"status": "pending", "stopped": False,
                     "error": "Turn hat noch nicht begonnen; Abbruch ist vorgemerkt"}
         result = self.stop(run_id)
+        if result.get("status") == "not_active":
+            with self._active_runs_lock:
+                entry = self._client_runs.get(client_run_id)
+                if entry is not None:
+                    entry["stop_pending"] = True
+            self._chase_pending_stop(client_run_id, run_id)
+            return {"status": "pending", "stopped": False, "run_id": run_id,
+                    "error": "Turn startet gerade; Abbruch ist vorgemerkt"}
         # Hermes answers "stopping": it has accepted an interrupt, not proven the
         # run is dead. Only claim stopped when it actually says so.
         status = str(result.get("status") or "stopping")
@@ -1584,11 +1609,59 @@ class HermesClient:
         result["run_id"] = run_id
         return result
 
+    def _chase_pending_stop(self, client_run_id: str, run_id: str) -> None:
+        """Keep retrying a pending stop on a timer, not only on the run's events.
+
+        A model can think for many seconds without emitting anything, and the
+        next event may be a tool starting — too late for a stop the user
+        pressed before it. The agent exists about a second after run.started.
+        """
+        def chase() -> None:
+            while True:
+                time.sleep(PENDING_STOP_RETRY_SECONDS)
+                with self._active_runs_lock:
+                    entry = self._client_runs.get(client_run_id)
+                    if (not entry or not entry.get("stop_pending")
+                            or entry.get("run_id") != run_id):
+                        return
+                self._retry_pending_stop(client_run_id, run_id)
+
+        threading.Thread(target=chase, name="jarvis-pending-stop", daemon=True).start()
+
+    def _retry_pending_stop(self, client_run_id: str, run_id: str) -> None:
+        """Deliver a stop Hermes could not accept yet.
+
+        A stop between run.started and the agent existing gets 409
+        run_not_active while the run goes on. Any later event of the run means
+        the agent is there, so the stop is repeated until Hermes takes it.
+        """
+        with self._active_runs_lock:
+            entry = self._client_runs.get(client_run_id)
+            if not entry or not entry.get("stop_pending"):
+                return
+        try:
+            status = str(self.stop(run_id).get("status") or "")
+        except Exception:  # noqa: BLE001
+            return
+        if status != "not_active":
+            with self._active_runs_lock:
+                entry = self._client_runs.get(client_run_id)
+                if entry is not None:
+                    entry["stop_pending"] = False
+
     def stop(self, run_id: str) -> dict:
         if not RUN_ID_RE.fullmatch(run_id):
             raise ValueError("Ungültige run_id")
-        with self._request("POST", f"/v1/runs/{run_id}/stop", {}) as response:
-            raw = response.read().decode("utf-8")
+        try:
+            with self._request("POST", f"/v1/runs/{run_id}/stop", {}) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # Hermes emits run.started about a second before it has built the
+            # agent, and answers a stop in that gap with 409 run_not_active
+            # while the run carries on. That is "not yet", not a failure.
+            if exc.code == HTTPStatus.CONFLICT and _hermes_error_code(exc) == "run_not_active":
+                return {"status": "not_active"}
+            raise
         try:
             return json.loads(raw)
         except json.JSONDecodeError:

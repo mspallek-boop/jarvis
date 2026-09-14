@@ -109,6 +109,8 @@ Responses (all `200` unless noted):
 |---|---|
 | Hermes reported the run stopped | `{"status": "stopped", "stopped": true, "run_id": "run_…"}` |
 | Hermes accepted the interrupt | `{"status": "stopping", "stopped": false, "run_id": "run_…"}` |
+| Run started but agent not built yet (Hermes `409 run_not_active`), by `client_run_id` | `{"status": "pending", "stopped": false, "run_id": "run_…", "error": "…"}` — the bridge repeats the stop on the run's next event |
+| Same, by raw `run_id` | `{"status": "not_active", "stopped": false, "run_id": "run_…"}` — nothing is remembered; retry |
 | Turn not started yet | `{"status": "pending", "stopped": false, "error": "…"}` |
 | No such client_run_id | `{"status": "unknown", "stopped": false, "error": "…"}` |
 | Neither field / both fields / malformed id | `400 {"error": "…"}` |
