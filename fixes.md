@@ -436,13 +436,26 @@ Skript mit dem alten Gateway stirbt — genau der Fall, der die Vertretung eine
 Minute lang stumm machte. Ohne installierten Dienst bleibt der CLI-Weg.
 Regressionstests in `tests/test_whatsapp_mode.py`.
 
-**Weiter offen für Monet:** den Besitzer von Port 8642 und
-die doppelte `api_server`-Konfiguration bereinigen; WhatsApp-JID vor der
-Home-Notification validieren; SessionDB pro Prozess nur einmal öffnen; und für
-WhatsApp/Mode/Bridge einen Regressionstest ergänzen, der den Ablauf
-`Zeitablauf → Mode off → Gateway-Neustart → Bridge reconnect` ohne Lock und
-ohne Portkollision durchspielt. `BrokenPipeError` beim Client-Abbruch gezielt
-abfangen und nicht als Gateway-Crash loggen.
+**Erledigt am 2026-09-15.** Die übrigen Punkte, gegen die Logs geprüft:
+
+- **Port 8642 / doppelter `api_server`:** Kein Profil konfiguriert mehr einen
+  eigenen `api_server`; auf 8642 lauscht nur das Gateway. Die letzte
+  Kollision stammt vom 2026-09-13 19:01, also vor dem geordneten Neustart
+  (`sequenced_reload`, wartet auf die Freigabe des Ports) und dem Wechsel ohne
+  Gateway-Neustart (nur `bridge.js` wird ersetzt) vom 2026-09-14. Ein
+  `kickstart -k` des Gateways heute lief ohne Kollision.
+- **`jidDecode`:** zuletzt am 2026-09-10. Hermes normalisiert nackte Nummern
+  inzwischen selbst zu `<ziffern>@s.whatsapp.net`
+  (`gateway/whatsapp_identity.py`, upstream #8637).
+- **SessionDB:** Hermes teilt jetzt eine Verbindung pro Pfad
+  (`hermes_state_registry`); im Log steht nur noch die INFO-Zeile beim
+  Herunterfahren.
+- **Regressionstest:** `test_an_expired_timer_switches_off_without_touching_the_gateway`
+  spielt `Zeitablauf → off → Bridge reconnect` durch und verlangt, dass dabei
+  weder `launchctl` noch ein CLI-Neustart aufgerufen wird.
+- **`BrokenPipeError`:** Der Bridge-Server (`JarvisHTTPServer`) schreibt einen
+  Client, der mitten in der Antwort auflegt, als eine Zeile ins normale Log
+  statt als Traceback ins Fehlerlog. Andere Fehler behalten ihren Traceback.
 
 ### 13. OpenAI-Stimmen — Butler-/JARVIS-Stimme und Sprechtempo
 **Weitgehend erledigt am 2026-09-09.** Die Stimmenliste war unvollständig:

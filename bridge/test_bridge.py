@@ -613,5 +613,45 @@ class SessionRecoveryTests(unittest.TestCase):
             self.assertEqual(client._session_id("jarvis-apple"), "api_cached")
 
 
+class ClientHangupTests(unittest.TestCase):
+    """A client that disconnects mid-response is routine, not a bridge fault."""
+
+    def _handle(self, error):
+        import contextlib
+        import io
+        from http.server import BaseHTTPRequestHandler
+        from jarvis_bridge import JarvisHTTPServer
+
+        server = JarvisHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler,
+                                  bind_and_activate=False)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    raise error
+                except Exception:
+                    server.handle_error(None, ("127.0.0.1", 50123))
+        finally:
+            server.server_close()
+        return out.getvalue(), err.getvalue()
+
+    def test_a_broken_pipe_is_one_line_without_a_traceback(self):
+        out, err = self._handle(BrokenPipeError(32, "Broken pipe"))
+        self.assertEqual(err, "")
+        self.assertEqual(len(out.strip().splitlines()), 1)
+        self.assertIn("client disconnected", out)
+
+    def test_a_reset_connection_is_treated_the_same(self):
+        out, err = self._handle(ConnectionResetError(54, "Connection reset by peer"))
+        self.assertEqual(err, "")
+        self.assertIn("ConnectionResetError", out)
+
+    def test_a_real_error_keeps_its_traceback(self):
+        out, err = self._handle(ValueError("bug"))
+        self.assertEqual(out, "")
+        self.assertIn("Traceback", err)
+        self.assertIn("ValueError", err)
+
+
 if __name__ == "__main__":
     unittest.main()

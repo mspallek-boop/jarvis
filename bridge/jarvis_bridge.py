@@ -22,6 +22,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -2555,11 +2556,25 @@ class JarvisHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_GATEWAY, {"error": HermesClient._safe_error(exc)})
 
 
-def make_server(config: BridgeConfig) -> ThreadingHTTPServer:
+class JarvisHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        # The app going to the background, a watch losing Wi-Fi or a cancelled
+        # speech request all hang up while the bridge is still writing. That is
+        # routine: one line in the request log, not a traceback in the error log
+        # that reads like a crash.
+        error = sys.exc_info()[1]
+        if isinstance(error, (BrokenPipeError, ConnectionResetError)):
+            print(f"{client_address[0]} - client disconnected before the response "
+                  f"was complete ({type(error).__name__})", flush=True)
+            return
+        super().handle_error(request, client_address)
+
+
+def make_server(config: BridgeConfig) -> JarvisHTTPServer:
     handler = type("ConfiguredJarvisHandler", (JarvisHandler,), {})
     handler.client = HermesClient(config)
     handler.config = config
-    return ThreadingHTTPServer((config.host, config.port), handler)
+    return JarvisHTTPServer((config.host, config.port), handler)
 
 
 def main() -> None:

@@ -583,3 +583,25 @@ def test_a_plugin_file_from_a_gone_gateway_does_not_count(mode, monkeypatch, tmp
     in_place_shell(mode, monkeypatch, tmp_path, new_bridge_mode="bot")
     (tmp_path / "jarvis-whatsapp-reload.alive").write_text(json.dumps({"pid": 999}))
     assert mode.reload_gateway_pid() is None
+
+
+def test_an_expired_timer_switches_off_without_touching_the_gateway(mode, monkeypatch, tmp_path):
+    """The whole expiry path: timer runs out → "off" → the bridge reconnects in self-chat.
+
+    Until 2026-09-14 this ended in `hermes gateway restart` from inside the
+    gateway (refused, "Gateway-Neustart fehlgeschlagen") or in a kickstart whose
+    new api_server raced the old one for 8642. Now only bridge.js is replaced:
+    no launchctl and no CLI restart, so neither a lock nor a port collision.
+    """
+    run(mode, "on", "--contact", "491701234567", "--for", "2h")
+    state = json.loads(Path(mode.STATE_PATH).read_text())
+    state["until"] = time.time() - 1
+    Path(mode.STATE_PATH).write_text(json.dumps(state))
+    mode.restart_gateway = mode._real_restart_gateway
+    shell = in_place_shell(mode, monkeypatch, tmp_path, new_bridge_mode="self-chat")
+
+    assert run(mode, "enforce") == 0
+    assert mode._env_path.read_text() == ENV_BEFORE
+    assert mode.LAST_SWITCH == "in-place"
+    assert shell["killed"] == [100]
+    assert not any(argv[:1] == ["launchctl"] or "restart" in argv for argv in shell["argv"])
