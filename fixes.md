@@ -405,7 +405,7 @@ Eine kaputte `creds.json` kostet die WhatsApp-Kopplung. Das ist unabhängig von
 allem oben und sollte zuerst passieren.
 
 ### 12. Hermes/WhatsApp — Gateway-Abstürze und Data-/Program-Lock
-**Offen für Monet. Befund vom 2026-09-09.** Die Logs zeigen mehrere getrennte
+**Erledigt (2026-09-09 und 2026-09-15). Befund vom 2026-09-09.** Die Logs zeigen mehrere getrennte
 Fehler, die zusammen wie ein dauernder WhatsApp-Absturz wirken:
 
 - Der Gateway-Prozess wird per `SIGTERM` beendet und startet danach neu. Im

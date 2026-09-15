@@ -615,3 +615,60 @@ an `/speech` weiter.
 
 Wahrgenommene Latenz = `speech_end → playback_started` (App-Uhr). Quantile
 werden pro Span gebildet und nie zu einer Summe addiert.
+
+## Daueraufträge und Gesundheitswerte (nachgetragen 2026-09-15)
+
+Beide Endpunkte sind seit `389917e` live und werden von der App genutzt, standen
+aber noch nicht in diesem Vertrag. Belegt durch den Bridge-Log: 407 erfolgreiche
+`POST /health` von der iPhone-App.
+
+### `GET /standins` — auth
+
+Alles, was ohne die App im Vordergrund läuft: WhatsApp-Vertretungen,
+Antwortwächter und Telefonate. Der Name ist historisch; `kind` unterscheidet.
+
+```json
+{"count": 1, "standins": [{
+  "id": "3f2a…",            // stabil pro Auftrag; Wächter "watch-…", Anrufe "call-…"
+  "kind": "standin",        // "standin" | "watch" | "call"
+  "name": "Rici",           // Anzeigename, nie Nummer oder Chat-ID
+  "until": 1789500000.0,    // Unix-Sekunden, wann er endet
+  "started": 1789490000.0,
+  "announced": true,
+  "exchanges": 3,           // nur bei "standin" > 0
+  "history": [{"at": 1789491000.0, "gist": "…", "urgent": false}],
+  "status": "im Gespräch"   // nur bei "call": "in der Warteschlange" | "wählt" | "klingelt" | "im Gespräch"
+}]}
+```
+
+Reihenfolge: erst Vertretungen, dann Wächter, dann Anrufe, innerhalb jeder Art
+nach `until` aufsteigend (der zuerst endende vorn). `history` enthält, was
+JARVIS dem User über das Gespräch berichtet hat, nicht die Nachrichten selbst;
+bei Wächtern und Anrufen ist sie leer.
+
+### `POST /health` — auth
+
+Die App meldet den jüngsten HealthKit-Stand; die Bridge speichert ihn als
+einzelnen Schnappschuss in `~/.hermes/jarvis-health.json` (letzter gewinnt),
+aus dem JARVIS' Tools lesen.
+
+```json
+{"at": 1789495185.03, "steps": 8421, "active_energy_kcal": 320,
+ "glucose_mgdl": null, "glucose_at": null}
+```
+
+Alle Felder dürfen fehlen oder `null` sein; bei den Messwerten bleibt `null`
+`null` und wird nicht zu `0`, damit „kein Wert heute" und „0" unterscheidbar
+bleiben. Ein fehlendes `at` wird `0`. Werte, die keine Zahl sind, werden zu
+`null` statt abgelehnt; Kommazahlen werden auf ganze Zahlen abgeschnitten.
+
+| Status | Wann | Body |
+|---|---|---|
+| 200 | gespeichert | `{"ok": true, "health": {…, "received_at": …}}` |
+| 400 | Body kein JSON-Objekt, leer oder zu groß | `{"error": "…"}` |
+
+Gleichzeitige Uploads sind erlaubt. Bis 2026-09-15 bekam der zweite von zwei
+gleichzeitigen Uploads fälschlich 400; das ist behoben (`6d9b548`). Offen ist,
+ob das Zuckerfeld Blutzucker (`glucose_mgdl`, heute) oder Nahrungszucker (laut
+`docs/HEALTHKIT_INTEGRATION.md`) sein soll — eine Änderung dort ändert diesen
+Vertrag und die App gemeinsam.
