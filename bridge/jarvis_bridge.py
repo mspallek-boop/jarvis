@@ -281,7 +281,7 @@ class BridgeConfig:
     piper_bin: str = ""
     piper_model: str = ""
     openai_key: str = field(default="", repr=False)
-    openai_voice: str = "ash"          # the butler default; see OPENAI_VOICES
+    openai_voice: str = "cedar"        # the butler default; see OPENAI_VOICES
     openai_model: str = "gpt-4o-mini-tts"
     openai_instructions: str = ""
     elevenlabs_key: str = field(default="", repr=False)
@@ -326,7 +326,7 @@ class BridgeConfig:
             piper_bin=os.environ.get("JARVIS_PIPER_BIN", str(Path.home() / ".hermes/piper-venv/bin/piper")).strip(),
             piper_model=os.environ.get("JARVIS_PIPER_MODEL", str(Path.home() / ".hermes/piper-voices/de_DE-thorsten-high.onnx")).strip(),
             openai_key=os.environ.get("OPENAI_API_KEY", "").strip(),
-            openai_voice=os.environ.get("JARVIS_TTS_OPENAI_VOICE", "ash").strip(),
+            openai_voice=os.environ.get("JARVIS_TTS_OPENAI_VOICE", "cedar").strip(),
             openai_model=os.environ.get("JARVIS_TTS_OPENAI_MODEL", "gpt-4o-mini-tts").strip(),
             openai_instructions=os.environ.get("JARVIS_TTS_OPENAI_INSTRUCTIONS",
                                                DEFAULT_OPENAI_INSTRUCTIONS).strip(),
@@ -750,7 +750,7 @@ def _openai_speech_frames(text: str, key: str, voice: str, model: str,
     """
     if not key:
         raise RuntimeError("OpenAI key missing")
-    payload = {"model": model or "gpt-4o-mini-tts", "voice": voice or "ash",
+    payload = {"model": model or "gpt-4o-mini-tts", "voice": voice or "cedar",
                "input": text, "response_format": "pcm"}
     if instructions:
         payload["instructions"] = instructions
@@ -1296,7 +1296,10 @@ def store_health(body: dict) -> dict:
         "glucose_at": _number(body.get("glucose_at")),
     }
     HEALTH_STATE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = HEALTH_STATE.with_suffix(".json.tmp")
+    # One temp file per writer. The phone often posts twice at once, and with a
+    # shared name the first rename took the second request's file away: a
+    # FileNotFoundError, answered as 400 right after the 200.
+    tmp = HEALTH_STATE.with_name(f"{HEALTH_STATE.name}.{secrets.token_hex(8)}.tmp")
     tmp.write_text(json.dumps(record, ensure_ascii=False))
     tmp.replace(HEALTH_STATE)
     return record
@@ -2122,7 +2125,7 @@ class JarvisHandler(BaseHTTPRequestHandler):
                             "kein monatliches Kontingent, das leer läuft.",
                     "deprecated": False,
                     "voices": cloud_voices,
-                    "selected": OPENAI_VOICE_PREFIX + getattr(self.config, "openai_voice", "ash"),
+                    "selected": OPENAI_VOICE_PREFIX + getattr(self.config, "openai_voice", "cedar"),
                 })
             groups.append({
                 "id": "piper",

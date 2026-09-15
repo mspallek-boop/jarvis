@@ -653,5 +653,36 @@ class ClientHangupTests(unittest.TestCase):
         self.assertIn("ValueError", err)
 
 
+class HealthStoreTests(unittest.TestCase):
+    """Two phone uploads landing at once must both succeed."""
+
+    def test_an_upload_finishing_in_the_middle_of_another_does_not_fail_it(self):
+        from unittest import mock
+
+        import jarvis_bridge
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "jarvis-health.json"
+            real_write_text = Path.write_text
+            started, nested = [], []
+
+            def write_text(path, *args, **kwargs):
+                written = real_write_text(path, *args, **kwargs)
+                if not started:
+                    # A second request completes between this write and its rename.
+                    started.append(True)
+                    nested.append(jarvis_bridge.store_health({"at": 2, "steps": 2}))
+                return written
+
+            with mock.patch.object(jarvis_bridge, "HEALTH_STATE", state), \
+                    mock.patch.object(Path, "write_text", write_text):
+                first = jarvis_bridge.store_health({"at": 1, "steps": 1})
+
+            self.assertEqual(first["steps"], 1)
+            self.assertEqual(nested[0]["steps"], 2)
+            self.assertEqual(json.loads(state.read_text())["steps"], 1)
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+
+
 if __name__ == "__main__":
     unittest.main()
