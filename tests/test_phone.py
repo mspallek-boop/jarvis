@@ -341,6 +341,13 @@ def test_instructions_disclose_ai_and_bound_the_task():
     assert text.rstrip().endswith("Nur Donnerstag.") and "höchstens 6 Minuten" in text
 
 
+def test_instructions_answer_the_cost_question():
+    """Called people often ask whether an AI's call costs them something."""
+    text = phone.instructions("Nur Donnerstag.", "Marlon", "Friseur", 6)
+    assert "Nein, für Sie kostet das nichts." in text
+    assert "Nein, für dich kostet das nichts." in text
+
+
 class FakeWS:
     def __init__(self, events):
         self.events, self.sent = events, []
