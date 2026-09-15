@@ -1,0 +1,6 @@
+name: jarvis_phone
+version: 1.0.0
+description: Place real phone calls for the user over the Fairytel line with an OpenAI Realtime voice
+provides_tools:
+  - phone_call
+  - phone_call_status

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PROD_DIRS = ["server", "client", "worker", "hermes-plugin"]
+PROD_DIRS = ["server", "client", "worker", "hermes-plugin", "phone"]
 
 
 # Virtualenv directory names to skip. SETUP.md tells you to create ".venv",
