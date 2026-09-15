@@ -76,6 +76,69 @@ def _optional_int(value: object, field: str, minimum: int, maximum: int) -> int 
     return value
 
 
+# How the per-nutrient Soll follows from the goal.  Protein is set from the goal
+# weight (2 g per kg preserves muscle in a deficit), fat is 30 % of the calorie
+# goal, carbohydrates fill the rest, and sugar is capped at 10 % of the calories
+# (the WHO ceiling).  Calories, fat, carbohydrates and sugar are upper limits;
+# protein is a minimum.
+PROTEIN_G_PER_GOAL_KG = 2.0
+PROTEIN_SHARE_WITHOUT_GOAL_WEIGHT = 0.25
+FAT_SHARE = 0.30
+SUGAR_SHARE = 0.10
+
+NUTRIENTS = (
+    # key, label, unit, summary total field, entry field, limit
+    ("calories", "Kalorien", "kcal", "total_calories", "calories", "max"),
+    ("protein_g", "Eiweiß", "g", "total_protein_g", "protein_g", "min"),
+    ("carbohydrates_g", "Kohlenhydrate", "g", "total_carbohydrates_g", "carbohydrates_g", "max"),
+    ("fat_g", "Fett", "g", "total_fat_g", "fat_g", "max"),
+    ("sugar_g", "Zucker", "g", "total_sugar_g", "sugar_g", "max"),
+)
+
+
+def nutrient_targets(daily_calories: int, goal_weight_kg: float | None) -> dict[str, int]:
+    """Daily Soll for every tracked nutrient, derived only from the goal."""
+    if goal_weight_kg:
+        protein = round(PROTEIN_G_PER_GOAL_KG * goal_weight_kg)
+    else:
+        protein = round(daily_calories * PROTEIN_SHARE_WITHOUT_GOAL_WEIGHT / 4)
+    fat = round(daily_calories * FAT_SHARE / 9)
+    return {
+        "calories": daily_calories,
+        "protein_g": protein,
+        "carbohydrates_g": max(0, round((daily_calories - protein * 4 - fat * 9) / 4)),
+        "fat_g": fat,
+        "sugar_g": round(daily_calories * SUGAR_SHARE / 4),
+    }
+
+
+def _nutrient_rows(summary: dict[str, Any], targets: dict[str, int] | None) -> list[dict[str, Any]]:
+    """Ist next to Soll per nutrient, with a verdict the report and HUD share.
+
+    ``complete`` is false when some entries of the day lack the value, so the
+    Ist is a lower bound: an upper limit can then still be judged "over", but
+    never "ok".
+    """
+    entries = summary["entries"]
+    rows = []
+    for key, label, unit, total_field, entry_field, limit in NUTRIENTS:
+        actual = summary[total_field]
+        target = targets[key] if targets else None
+        recorded = sum(1 for entry in entries if entry[entry_field] is not None)
+        complete = recorded == len(entries)
+        if actual is None or target is None:
+            status = None
+        elif limit == "max":
+            status = "over" if actual > target else ("ok" if complete else "incomplete")
+        else:
+            status = "ok" if actual >= target else ("under" if complete else "incomplete")
+        rows.append({
+            "key": key, "label": label, "unit": unit, "actual": actual, "target": target,
+            "limit": limit, "status": status, "recorded_entries": recorded, "complete": complete,
+        })
+    return rows
+
+
 def _total_optional(entries: list[dict[str, Any]], field: str) -> float | None:
     """Total a nutrient only when at least one entry actually recorded it."""
     values = [entry[field] for entry in entries if entry[field] is not None]
@@ -118,6 +181,7 @@ class CalorieTracker:
                 CREATE TABLE IF NOT EXISTS calorie_goals (
                     effective_from TEXT PRIMARY KEY,
                     daily_calories INTEGER NOT NULL CHECK(daily_calories > 0),
+                    goal_weight_kg REAL,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS calorie_weekly_checkins (
@@ -142,6 +206,9 @@ class CalorieTracker:
             for column in ("sugar_g", "protein_g", "fat_g", "carbohydrates_g"):
                 if column not in existing:
                     conn.execute(f"ALTER TABLE calorie_entries ADD COLUMN {column} REAL")
+            goal_columns = {row[1] for row in conn.execute("PRAGMA table_info(calorie_goals)")}
+            if "goal_weight_kg" not in goal_columns:
+                conn.execute("ALTER TABLE calorie_goals ADD COLUMN goal_weight_kg REAL")
 
     @staticmethod
     def _entry(row: sqlite3.Row) -> dict[str, Any]:
@@ -191,29 +258,42 @@ class CalorieTracker:
     def set_goal(self, payload: dict[str, Any]) -> dict[str, Any]:
         effective = _parse_date(payload.get("effective_from") or date.today().isoformat(), "effective_from")
         target = _calories(payload.get("daily_calories"))
+        goal_weight = _optional_number(payload.get("goal_weight_kg"), "goal_weight_kg", 30, 300)
+        if goal_weight is None:
+            # Changing only the calories keeps the goal weight already set.
+            previous = self.goal_details_for(effective)
+            goal_weight = previous["goal_weight_kg"] if previous else None
         saved = {
             "effective_from": effective.isoformat(), "daily_calories": target,
+            "goal_weight_kg": goal_weight,
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         self.initialize()
         with self._connection() as conn:
             conn.execute(
-                """INSERT INTO calorie_goals (effective_from, daily_calories, created_at)
-                   VALUES (:effective_from, :daily_calories, :created_at)
+                """INSERT INTO calorie_goals (effective_from, daily_calories, goal_weight_kg, created_at)
+                   VALUES (:effective_from, :daily_calories, :goal_weight_kg, :created_at)
                    ON CONFLICT(effective_from) DO UPDATE SET
-                     daily_calories=excluded.daily_calories, created_at=excluded.created_at""",
+                     daily_calories=excluded.daily_calories, goal_weight_kg=excluded.goal_weight_kg,
+                     created_at=excluded.created_at""",
                 saved,
             )
-        return saved
+        return {**saved, "targets": nutrient_targets(target, goal_weight)}
 
-    def goal_for(self, on_day: date) -> int | None:
+    def goal_details_for(self, on_day: date) -> dict[str, Any] | None:
         self.initialize()
         with self._connection() as conn:
             row = conn.execute(
-                """SELECT daily_calories FROM calorie_goals
+                """SELECT daily_calories, goal_weight_kg FROM calorie_goals
                    WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1""", (on_day.isoformat(),)
             ).fetchone()
-        return int(row["daily_calories"]) if row else None
+        if row is None:
+            return None
+        return {"daily_calories": int(row["daily_calories"]), "goal_weight_kg": row["goal_weight_kg"]}
+
+    def goal_for(self, on_day: date) -> int | None:
+        goal = self.goal_details_for(on_day)
+        return goal["daily_calories"] if goal else None
 
     def record_activity(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Upsert one day's HealthKit-sourced activity aggregate.
@@ -269,13 +349,15 @@ class CalorieTracker:
             ).fetchall()
         entries = [self._entry(row) for row in rows]
         total = sum(entry["calories"] for entry in entries)
-        target = self.goal_for(day)
+        goal = self.goal_details_for(day)
+        target = goal["daily_calories"] if goal else None
+        targets = nutrient_targets(target, goal["goal_weight_kg"]) if goal else None
         activity = self.activity_for_day(day)
         logged_sugar = sum(entry["sugar_g"] for entry in entries if entry["sugar_g"] is not None)
         synced_sugar = activity["dietary_sugar_g"] if activity and activity["dietary_sugar_g"] is not None else None
         has_sugar = bool(entries and any(e["sugar_g"] is not None for e in entries)) or synced_sugar is not None
         activity_calories = activity["active_energy_kcal"] if activity else None
-        return {
+        summary = {
             "date": day.isoformat(), "total_calories": total, "target_calories": target,
             "remaining_calories": target - total if target is not None else None,
             "entry_count": len(entries), "entries": entries,
@@ -286,7 +368,11 @@ class CalorieTracker:
             "total_protein_g": _total_optional(entries, "protein_g"),
             "total_fat_g": _total_optional(entries, "fat_g"),
             "total_carbohydrates_g": _total_optional(entries, "carbohydrates_g"),
+            "goal_weight_kg": goal["goal_weight_kg"] if goal else None,
+            "targets": targets,
         }
+        summary["nutrients"] = _nutrient_rows(summary, targets)
+        return summary
 
     def week_summary(self, week_value: str | date) -> dict[str, Any]:
         supplied = _parse_date(week_value, "week_start") if isinstance(week_value, str) else week_value

@@ -21,7 +21,7 @@ CALORIES_LOG = {
 
 CALORIES_DAILY = {
     "name": "calories_daily_summary",
-    "description": "Read the local calorie diary for one calendar day, including entries, total, target, and remaining calories.",
+    "description": "Read the local calorie diary for one calendar day: entries, and for every nutrient the Ist next to the Soll derived from the goal (nutrients list with status ok/over/under/incomplete).",
     "parameters": {"type": "object", "properties": {
         "date": {"type": "string", "description": "ISO date YYYY-MM-DD; omit for today"},
     }},
@@ -59,9 +59,14 @@ CALORIES_PROGRESS = {
 
 CALORIES_GOAL = {
     "name": "calories_set_goal",
-    "description": "Set or change the user's local daily calorie target from a date onward.",
+    "description": (
+        "Set or change the user's daily goal from a date onward: the calorie target and, optionally, "
+        "the goal body weight. The Soll for protein, carbohydrates, fat and sugar is derived from these "
+        "two values automatically; never set nutrient targets by hand."
+    ),
     "parameters": {"type": "object", "properties": {
         "daily_calories": {"type": "integer", "description": "Positive daily calorie target"},
+        "goal_weight_kg": {"type": "number", "description": "Optional goal body weight in kg; omit to keep the current one"},
         "effective_from": {"type": "string", "description": "Optional ISO date; default today"},
     }, "required": ["daily_calories"]},
 }

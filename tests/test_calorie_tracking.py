@@ -158,45 +158,113 @@ def test_tracker_migrates_existing_diary_without_losing_entries(tmp_path):
     assert summary["total_sugar_g"] == 8.5
 
 
-def test_daily_balance_report_has_headline_macros_activity_and_all_entries():
-    report = format_daily_balance({
-        "date": "2026-09-09", "total_calories": 1850, "target_calories": 2200,
-        "remaining_calories": 350, "total_protein_g": 132.5, "total_fat_g": 58,
-        "total_carbohydrates_g": 190, "total_sugar_g": 42.5, "activity_calories": 320,
-        "net_calories": 1530, "steps": 8421,
-        "entries": [{"description": "Greek yogurt"}, {"description": "Lentil bowl"}, {"description": "Protein shake"}],
-    })
+def test_targets_follow_from_calorie_goal_and_goal_weight():
+    from calorie_tracker import nutrient_targets
+    # 2000 kcal, 70 kg: protein 2 g/kg, fat 30 %, carbs the rest, sugar max 10 %.
+    assert nutrient_targets(2000, 70) == {
+        "calories": 2000, "protein_g": 140, "carbohydrates_g": 209, "fat_g": 67, "sugar_g": 50}
+    # Without a goal weight protein falls back to 25 % of the calories.
+    assert nutrient_targets(2000, None)["protein_g"] == 125
+
+
+def test_day_summary_puts_ist_next_to_soll_with_a_verdict(tmp_path):
+    tracker = CalorieTracker(tmp_path / "calories.sqlite3")
+    goal = tracker.set_goal({"daily_calories": 2000, "goal_weight_kg": 70, "effective_from": "2026-09-01"})
+    assert goal["targets"]["protein_g"] == 140
+    tracker.add_entry({"calories": 1500, "description": "pasta", "protein_g": 60, "fat_g": 80,
+                       "carbohydrates_g": 150, "sugar_g": 20, "occurred_at": "2026-09-08T12:00:00+02:00"})
+
+    rows = {row["key"]: row for row in tracker.day_summary("2026-09-08")["nutrients"]}
+    assert (rows["calories"]["actual"], rows["calories"]["target"], rows["calories"]["status"]) == (1500, 2000, "ok")
+    assert rows["protein_g"]["status"] == "under"
+    assert rows["fat_g"]["status"] == "over"
+    assert rows["sugar_g"]["status"] == "ok"
+
+    # A second entry without macros makes the Ist a lower bound: no "ok" for limits any more.
+    tracker.add_entry({"calories": 100, "description": "juice", "occurred_at": "2026-09-08T15:00:00+02:00"})
+    rows = {row["key"]: row for row in tracker.day_summary("2026-09-08")["nutrients"]}
+    assert rows["sugar_g"]["status"] == "incomplete"
+    assert rows["fat_g"]["status"] == "over"
+    assert rows["protein_g"]["status"] == "incomplete"
+
+
+def test_changing_only_calories_keeps_the_goal_weight(tmp_path):
+    tracker = CalorieTracker(tmp_path / "calories.sqlite3")
+    tracker.set_goal({"daily_calories": 2000, "goal_weight_kg": 70, "effective_from": "2026-09-01"})
+    changed = tracker.set_goal({"daily_calories": 1800, "effective_from": "2026-09-10"})
+    assert changed["goal_weight_kg"] == 70
+    assert tracker.day_summary("2026-09-11")["targets"]["calories"] == 1800
+
+
+def test_goal_weight_column_is_added_to_an_existing_diary(tmp_path):
+    path = tmp_path / "calories.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE calorie_goals (effective_from TEXT PRIMARY KEY,
+            daily_calories INTEGER NOT NULL, created_at TEXT NOT NULL)""")
+        conn.execute("INSERT INTO calorie_goals VALUES ('2026-09-01', 2000, '2026-09-01T00:00:00+02:00')")
+    summary = CalorieTracker(path).day_summary("2026-09-08")
+    assert summary["target_calories"] == 2000 and summary["goal_weight_kg"] is None
+
+
+def _report_summary(tmp_path, **goal):
+    tracker = CalorieTracker(tmp_path / "calories.sqlite3")
+    if goal:
+        tracker.set_goal({"effective_from": "2026-09-01", **goal})
+    return tracker
+
+
+def test_daily_balance_report_lists_every_nutrient_as_ist_and_soll(tmp_path):
+    tracker = _report_summary(tmp_path, daily_calories=2000, goal_weight_kg=70)
+    tracker.add_entry({"calories": 1890, "description": "Skyr", "protein_g": 115.8, "fat_g": 70.9,
+                       "carbohydrates_g": 195.6, "sugar_g": 69, "occurred_at": "2026-09-09T12:00:00+02:00"})
+    tracker.record_activity({"day": "2026-09-09", "steps": 8421, "active_energy_kcal": 320})
+    report = format_daily_balance(tracker.day_summary("2026-09-09"))
 
     assert report.startswith("🍽️ *Tagesbilanz · Mi 09.09.2026*")
-    assert "*1.850* / 2.200 kcal   ✅ 350 übrig" in report
-    assert "*Makros*\n🥩 Eiweiß 132,5 g\n🍞 KH 190 g\n🧈 Fett 58 g\n🍬 Zucker 42,5 g" in report
-    assert "*Aktivität*\n🔥 Aktivität 320 kcal · Netto 1.530 kcal\n👟 8.421 Schritte" in report
-    assert "```" not in report
-    assert report.endswith("*Erfasst (3)*\n• Greek yogurt\n• Lentil bowl\n• Protein shake")
+    assert ("*Nährwerte · Ist / Soll*\n"
+            "🔥 Kalorien: *1.890* / max. 2.000 kcal  ✅ 110 kcal übrig\n"
+            "🥩 Eiweiß: *115,8* / mind. 140 g  ⚠️ 24,2 g fehlen\n"
+            "🍞 Kohlenhydrate: *195,6* / max. 209 g  ✅ 13,4 g übrig\n"
+            "🧈 Fett: *70,9* / max. 67 g  ⚠️ 3,9 g zu viel\n"
+            "🍬 Zucker: *69* / max. 50 g  ⚠️ 19 g zu viel") in report
+    assert "⚠️ Daneben: Eiweiß, Fett, Zucker" in report
+    assert "_Soll aus deinem Ziel: 2.000 kcal/Tag · Zielgewicht 70 kg_" in report
+    assert "*Aktivität*\n🏃 Aktivität 320 kcal · Netto 1.570 kcal\n👟 8.421 Schritte" in report
+    assert report.endswith("*Erfasst (1)*\n• Skyr")
 
 
-def test_daily_balance_report_flags_going_over_target_and_skips_empty_activity():
-    report = format_daily_balance({
-        "date": "2026-09-09", "total_calories": 2450, "target_calories": 2200,
-        "remaining_calories": -250, "entries": [],
-    })
+def test_daily_balance_report_all_in_soll_and_missing_values(tmp_path):
+    tracker = _report_summary(tmp_path, daily_calories=2000, goal_weight_kg=70)
+    tracker.add_entry({"calories": 1900, "description": "Bowl", "protein_g": 150, "fat_g": 60,
+                       "carbohydrates_g": 200, "sugar_g": 30, "occurred_at": "2026-09-09T12:00:00+02:00"})
+    assert "✅ Alles im Soll — gut gegessen" in format_daily_balance(tracker.day_summary("2026-09-09"))
 
-    assert "*2.450* / 2.200 kcal   ⚠️ 250 über Ziel" in report
-    assert "🥩 Eiweiß nicht erfasst" in report
+    tracker.add_entry({"calories": 300, "description": "tea", "occurred_at": "2026-09-10T12:00:00+02:00"})
+    report = format_daily_balance(tracker.day_summary("2026-09-10"))
+    assert "🥩 Eiweiß: nicht erfasst / mind. 140 g" in report
     assert "*Aktivität*" not in report
-    assert report.endswith("*Erfasst (0)*\nkeine Lebensmittel oder Getränke")
 
 
-def test_daily_report_tool_returns_the_formatted_message(monkeypatch):
-    monkeypatch.setattr(calorie_tools, "_request", lambda *args, **kwargs: """{
-        "date":"2026-09-09","total_calories":300,"target_calories":2000,
-        "remaining_calories":1700,"total_protein_g":null,"total_fat_g":null,
-        "total_carbohydrates_g":null,"total_sugar_g":null,"entries":[{"description":"tea"}]
-    }""")
+def test_daily_balance_report_without_goal_says_there_is_no_soll(tmp_path):
+    tracker = _report_summary(tmp_path)
+    tracker.add_entry({"calories": 300, "description": "tea", "protein_g": 2,
+                       "occurred_at": "2026-09-10T12:00:00+02:00"})
+    report = format_daily_balance(tracker.day_summary("2026-09-10"))
+    assert "🥩 Eiweiß: *2* g · kein Soll" in report
+    assert "_Kein Ziel gesetzt — deshalb kein Soll._" in report
+    assert report.endswith("*Erfasst (1)*\n• tea")
+
+
+def test_daily_report_tool_returns_the_formatted_message(monkeypatch, tmp_path):
+    import json
+    tracker = _report_summary(tmp_path, daily_calories=2000)
+    tracker.add_entry({"calories": 300, "description": "tea", "occurred_at": "2026-09-09T12:00:00+02:00"})
+    summary = json.dumps(tracker.day_summary("2026-09-09"))
+    monkeypatch.setattr(calorie_tools, "_request", lambda *args, **kwargs: summary)
 
     report = calorie_tools.calories_daily_report({"date": "2026-09-09"})
     assert report.startswith("🍽️ *Tagesbilanz · Mi 09.09.2026*")
-    assert "*300* / 2.000 kcal   ✅ 1.700 übrig" in report
+    assert "🔥 Kalorien: *300* / max. 2.000 kcal  ✅ 1.700 kcal übrig" in report
     assert report.endswith("*Erfasst (1)*\n• tea")
 
 

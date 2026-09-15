@@ -1,8 +1,8 @@
 """Plain-text reports for the local JARVIS nutrition diary.
 
-The report is a clean, sectioned WhatsApp message: a headline with the calorie
-balance, a macro block, an optional activity block, and finally a bullet list of
-everything eaten and drunk that day. It uses WhatsApp's ``*bold*`` markup and one
+The report is a clean, sectioned WhatsApp message: a headline, every nutrient
+with its Ist next to the Soll derived from the goal plus a verdict, an optional
+activity block, and finally a bullet list of everything eaten and drunk that day. It uses WhatsApp's ``*bold*`` markup and one
 item per line rather than a monospaced table, so it stays legible on a phone.
 """
 
@@ -35,41 +35,75 @@ def _date_short(value: str) -> str:
     return f"{WEEKDAYS_SHORT[day.weekday()]} {day.day:02d}.{day.month:02d}.{day.year}"
 
 
-def _calorie_line(summary: dict[str, Any]) -> str:
-    total = summary.get("total_calories")
-    target = summary.get("target_calories")
-    remaining = summary.get("remaining_calories")
-    if total is not None and target is not None:
-        line = f"*{_integer(total, '')}* / {_integer(target, '')} kcal"
-        if remaining is not None:
-            if remaining >= 0:
-                line += f"   ✅ {_integer(remaining, '')} übrig"
-            else:
-                line += f"   ⚠️ {_integer(-remaining, '')} über Ziel"
-        return line
-    if total is not None:
-        return f"*{_integer(total, 'kcal')}*"
-    return "Kalorien nicht erfasst"
+EMOJI = {"calories": "🔥", "protein_g": "🥩", "carbohydrates_g": "🍞", "fat_g": "🧈", "sugar_g": "🍬"}
+
+
+def _amount(value: Any, unit: str) -> str:
+    return _integer(value, unit) if unit == "kcal" else _number(value, unit)
+
+
+def _nutrient_line(row: dict[str, Any]) -> str:
+    """One nutrient as "Ist / Soll" plus a verdict, e.g. Eiweiß: *116* / mind. 140 g ⚠️ 24 g fehlen."""
+    unit, actual, target = row["unit"], row.get("actual"), row.get("target")
+    bound = "mind." if row.get("limit") == "min" else "max."
+    ist = f"*{_amount(actual, '')}*" if actual is not None else "nicht erfasst"
+    line = f"{EMOJI.get(row['key'], '•')} {row['label']}: {ist}"
+    if target is None:
+        return f"{line} {unit} · kein Soll" if actual is not None else line
+    line += f" / {bound} {_amount(target, unit)}"
+    status = row.get("status")
+    if status == "ok":
+        gap = target - actual
+        line += f"  ✅ {_amount(gap, unit)} übrig" if row.get("limit") == "max" and gap > 0 else "  ✅"
+    elif status == "over":
+        line += f"  ⚠️ {_amount(actual - target, unit)} zu viel"
+    elif status == "under":
+        line += f"  ⚠️ {_amount(target - actual, unit)} fehlen"
+    elif status == "incomplete":
+        line += "  ❔ unvollständig"
+    return line
+
+
+def _verdict(rows: list[dict[str, Any]]) -> str | None:
+    judged = [row for row in rows if row.get("status") is not None]
+    if not judged:
+        return None
+    off = [row["label"] for row in judged if row["status"] in ("over", "under")]
+    open_ = [row["label"] for row in judged if row["status"] == "incomplete"]
+    if off:
+        verdict = f"⚠️ Daneben: {', '.join(off)}"
+    elif open_:
+        verdict = "✅ Bisher im Soll"
+    else:
+        verdict = "✅ Alles im Soll — gut gegessen"
+    if open_:
+        verdict += f"\n❔ Nicht bei allen Einträgen erfasst: {', '.join(open_)}"
+    return verdict
 
 
 def format_daily_balance(summary: dict[str, Any]) -> str:
     """Render one API day summary as a ready-to-send WhatsApp message."""
-    sections = [
-        f"🍽️ *Tagesbilanz · {_date_short(str(summary['date']))}*",
-        _calorie_line(summary),
-    ]
+    sections = [f"🍽️ *Tagesbilanz · {_date_short(str(summary['date']))}*"]
 
-    macros = [
-        f"🥩 Eiweiß {_number(summary.get('total_protein_g'), 'g')}",
-        f"🍞 KH {_number(summary.get('total_carbohydrates_g'), 'g')}",
-        f"🧈 Fett {_number(summary.get('total_fat_g'), 'g')}",
-        f"🍬 Zucker {_number(summary.get('total_sugar_g'), 'g')}",
-    ]
-    sections.append("*Makros*\n" + "\n".join(macros))
+    rows = summary.get("nutrients") or []
+    lines = [_nutrient_line(row) for row in rows] or ["Nährwerte nicht verfügbar"]
+    block = "*Nährwerte · Ist / Soll*\n" + "\n".join(lines)
+    verdict = _verdict(rows)
+    if verdict:
+        block += "\n\n" + verdict
+    targets = summary.get("targets")
+    if targets:
+        basis = f"{_integer(targets['calories'], 'kcal')}/Tag"
+        if summary.get("goal_weight_kg"):
+            basis += f" · Zielgewicht {_number(summary['goal_weight_kg'], 'kg')}"
+        block += f"\n_Soll aus deinem Ziel: {basis}_"
+    else:
+        block += "\n_Kein Ziel gesetzt — deshalb kein Soll._"
+    sections.append(block)
 
     activity: list[str] = []
     if summary.get("activity_calories") is not None:
-        line = f"🔥 Aktivität {_integer(summary['activity_calories'], 'kcal')}"
+        line = f"🏃 Aktivität {_integer(summary['activity_calories'], 'kcal')}"
         if summary.get("net_calories") is not None:
             line += f" · Netto {_integer(summary['net_calories'], 'kcal')}"
         activity.append(line)

@@ -40,7 +40,8 @@ def test_the_text_comes_from_the_plugin_report(monkeypatch):
     """Same generator as the Hermes tool, so the message is what the tool returns."""
     monkeypatch.setattr(balance, "REPORT",
                         Path(__file__).resolve().parents[1] / "hermes-plugin/jarvis_calories/report.py")
-    text = balance.format_balance({"date": "2026-09-10", "total_calories": 566, "entries": [],
-                                   "entry_count": 0, "total_sugar_g": 19.6})
+    text = balance.format_balance({"date": "2026-09-10", "entries": [], "targets": None, "nutrients": [
+        {"key": "sugar_g", "label": "Zucker", "unit": "g", "actual": 19.6, "target": 50,
+         "limit": "max", "status": "ok"}]})
     assert text.startswith("🍽️ *Tagesbilanz · Do 10.09.2026*")
-    assert "*566 kcal*" in text and "🍬 Zucker 19,6 g" in text and "nicht erfasst" in text
+    assert "🍬 Zucker: *19,6* / max. 50 g  ✅ 30,4 g übrig" in text

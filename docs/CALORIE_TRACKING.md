@@ -43,6 +43,30 @@ a one-click delete, and has a quick `kcal` + description field to log an
 entry without talking to Hermes at all. It refreshes every 60s and calls the
 same `/api/calories/*` routes above.
 
+## Soll from the goal
+
+The goal is two numbers: the daily calories and, optionally, the goal body
+weight. Every nutrient's Soll is derived from them — nothing is set by hand:
+
+| Nährwert | Soll | Art |
+|---|---|---|
+| Kalorien | `daily_calories` | Obergrenze |
+| Eiweiß | 2 g × goal weight (without one: 25 % of the calories) | Mindestwert |
+| Fett | 30 % of the calories ÷ 9 | Obergrenze |
+| Kohlenhydrate | the remaining calories ÷ 4 | Obergrenze |
+| Zucker | 10 % of the calories ÷ 4 (WHO ceiling) | Obergrenze |
+
+```json
+PUT /api/calories/goal
+{"daily_calories": 2000, "goal_weight_kg": 70}
+```
+
+Omitting `goal_weight_kg` keeps the weight already set. A day summary carries
+`targets` and a `nutrients` list with `actual`, `target`, `limit` (`max`/`min`)
+and `status`: `ok`, `over`, `under`, or `incomplete` when some entries of the
+day lack that value, so the Ist is only a lower bound. The evening balance and
+the HUD panel both render that list as Ist / Soll.
+
 ## Sugar
 
 Any food entry may carry optional nutrition values in grams (0–2000):
@@ -60,8 +84,8 @@ nothing was ever recorded — not zero grams.
 
 `calories_daily_report` is the versioned report generator for the evening
 balance. It uses the existing daily-summary data and returns a message ready to
-send unchanged: a dated heading, a compact plain-text table, separate status
-badges, then one paragraph listing every recorded food and drink. Values that
+send unchanged: a dated heading, every nutrient as Ist / Soll with a verdict,
+the activity block, then every recorded food and drink. Values that
 were never logged are shown as `nicht erfasst`, never as invented zeroes.
 
 It goes out every evening at 22:00 to the WhatsApp group "Nährwerte Jarvis"

@@ -348,9 +348,8 @@ footer{
       <div class="kv"><span>Wind</span><b id="wxWind">—</b></div>
     </div>
     <div class="panel"><h2><span>CALORIES</span><span class="num">12</span></h2>
-      <div class="kv"><span>Today</span><b id="calTotal">—</b></div>
-      <div class="kv"><span>Target</span><b id="calTarget">—</b></div>
-      <div class="kv"><span>Remaining</span><b id="calRemaining">—</b></div>
+      <div class="kv" style="opacity:.6; font-size:11px"><span>NÄHRWERT</span><b>IST / SOLL</b></div>
+      <div id="calNutrients"><div class="kv"><span>Kalorien</span><b id="calTotal">—</b></div></div>
       <div class="kv" id="calStepsRow" style="display:none"><span>Steps</span><b id="calSteps">—</b></div>
       <div class="bar"><i id="calBar"></i></div>
       <div id="calEntries" style="max-height:110px; overflow-y:auto; font-size:12.5px; margin-top:6px"></div>
@@ -843,13 +842,15 @@ async function refreshCalories(){
     const today=localDay();
     const r=await fetch(`/api/calories/days/${today}`); if(!r.ok)throw new Error(r.status);
     const j=await r.json();
-    $("calTotal").textContent=`${j.total_calories} kcal`;
-    $("calTarget").textContent=j.target_calories!=null?`${j.target_calories} kcal`:"not set";
-    if(j.remaining_calories!=null){
-      $("calRemaining").textContent=`${j.remaining_calories} kcal`;
-      $("calRemaining").className=j.remaining_calories<0?"err":"";
-      $("calBar").style.width=Math.max(0,Math.min(100,j.total_calories/j.target_calories*100)).toFixed(0)+"%";
-    }else{ $("calRemaining").textContent="—"; $("calBar").style.width="0%"; }
+    // Ist next to the Soll the server derives from the goal; the verdict comes from the server too.
+    const fmt=v=>v==null?"—":(Math.round(v*10)/10).toLocaleString("de-DE");
+    const mark={ok:"✓",over:"▲",under:"▼",incomplete:"?"};
+    $("calNutrients").innerHTML=(j.nutrients||[]).map(n=>{
+      const soll=n.target==null?"kein Ziel":`${n.limit==="min"?"≥":"≤"} ${fmt(n.target)} ${n.unit}`;
+      const cls=n.status==="over"||n.status==="under"?"err":"";
+      return `<div class="kv"><span>${escHtml(n.label)}</span><b class="${cls}">${fmt(n.actual)} / ${soll} ${n.status?mark[n.status]:""}</b></div>`;
+    }).join("");
+    $("calBar").style.width=j.target_calories?Math.max(0,Math.min(100,j.total_calories/j.target_calories*100)).toFixed(0)+"%":"0%";
     if(j.steps!=null){ $("calStepsRow").style.display="flex"; $("calSteps").textContent=j.steps; }
     $("calEntries").innerHTML=(j.entries||[]).length
       ? j.entries.map(e=>`<div class="kv"><span>${escHtml(e.description)}${e.meal?` <span style="opacity:.6">(${escHtml(e.meal)})</span>`:""}</span>`
@@ -860,7 +861,7 @@ async function refreshCalories(){
         try{ await fetch(`/api/calories/entries/${encodeURIComponent(el.dataset.id)}`,{method:"DELETE"}); refreshCalories(); }catch{}
       };
     });
-  }catch{ $("calTotal").textContent="unavailable"; }
+  }catch{ $("calNutrients").innerHTML="<div class='kv'><span>Kalorien</span><b>unavailable</b></div>"; }
 }
 async function addCalorieEntry(){
   const cal=parseInt($("calCalInput").value,10), desc=$("calDescInput").value.trim();
