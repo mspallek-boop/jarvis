@@ -204,6 +204,30 @@ final class AppModel: ObservableObject {
 
     /// Running tasks, oldest first. Empty means idle.
     @Published private(set) var localRuns: [LocalRun] = []
+    /// A task that has finished but is still on screen. In multitasking the
+    /// grids do not vanish the instant a task is done: the finished one stays,
+    /// saturated, until it has been read aloud, and the whole split collapses
+    /// back into the single orb only once every finished task has been spoken.
+    /// This is what carries a run through "fertig → vorgelesen → gemerged".
+    struct SettledRun: Identifiable {
+        let id: String
+        let prompt: String
+        let answer: String
+        let failed: Bool
+        /// The answer's pictures. Settling used to keep only the text, so a
+        /// finished task in the split showed "[Bild]" and never the picture.
+        let attachments: [MessageAttachment]
+        /// The read-aloud has completed (or was never due — speech was off).
+        var spoken: Bool
+    }
+    @Published private(set) var settledRuns: [SettledRun] = []
+    /// Creation order of every task currently on screen (running or settled),
+    /// so the split grids keep their place instead of reshuffling when one of
+    /// them finishes and moves from `localRuns` to `settledRuns`.
+    @Published private(set) var runOrder: [String] = []
+    /// The settled run whose full answer is being read aloud right now, so the
+    /// next one waits until this one is truly finished — never two at once.
+    private var readingRunID: String?
     /// The task the user is looking at: its answer streams into the view and
     /// the orb tap cancels it. Tapping another blob focuses that one instead.
     @Published var focusedRunID: String?
@@ -214,12 +238,59 @@ final class AppModel: ObservableObject {
     @Published private(set) var standins: [JarvisAPIClient.Standin] = []
     @Published private(set) var notificationBanner: String?
 
+    /// Pictures opened large, and which of them is showing. Nil means closed.
+    struct PictureViewing: Identifiable, Equatable {
+        let id = UUID()
+        let pictures: [MessageAttachment]
+        var index: Int
+    }
+    @Published var viewing: PictureViewing?
+
+    /// Open one picture large, with its siblings from the same answer reachable
+    /// by swiping or the arrow keys.
+    func openPicture(_ picture: MessageAttachment, in pictures: [MessageAttachment]) {
+        let images = pictures.filter { $0.kind == .image }
+        guard !images.isEmpty else { return }
+        viewing = PictureViewing(pictures: images, index: images.firstIndex(of: picture) ?? 0)
+    }
+
     var isWorking: Bool { !localRuns.isEmpty }
     private var focusedRun: LocalRun? {
         localRuns.first { $0.id == focusedRunID } ?? localRuns.first
     }
     var activityLabel: String { focusedRun?.activityLabel ?? "Ich denke nach" }
     var liveResponse: String { focusedRun?.liveResponse ?? "" }
+
+    /// Every task on screen, in creation order — one tile each, a running task
+    /// or a finished one still waiting to be read. The view iterates this
+    /// rather than `localRuns`/`settledRuns` directly, so a task keeps its
+    /// place and its glyph seed across the moment it goes from running to done.
+    var taskTiles: [MultitaskTile] {
+        runOrder.compactMap { id in
+            if let run = localRuns.first(where: { $0.id == id }) {
+                return MultitaskTile(id: id, seed: id.hashValue, running: true, failed: false,
+                                     spoken: false, activity: run.activityLabel, body: run.liveResponse)
+            }
+            if let done = settledRuns.first(where: { $0.id == id }) {
+                return MultitaskTile(id: id, seed: id.hashValue, running: false, failed: done.failed,
+                                     spoken: done.spoken, activity: "", body: done.answer)
+            }
+            return nil
+        }
+    }
+
+    /// The pictures of a finished task in the split, at most three. They are
+    /// looked up here rather than carried on `MultitaskTile`, because that type
+    /// is shared with the Watch, which has no attachments.
+    func settledPictures(for id: String) -> [MessageAttachment] {
+        guard let done = settledRuns.first(where: { $0.id == id }) else { return [] }
+        return Array(done.attachments.filter { $0.kind == .image }.prefix(3))
+    }
+
+    /// Two or more tasks on screen means the split — a grid each, side by side —
+    /// instead of one orb with blobs around it. At zero or one the view is
+    /// pixel-identical to before multitasking existed.
+    var isMultitasking: Bool { runOrder.count >= 2 }
 
     #if os(iOS)
     /// The lock screen's and the Dynamic Island's view of a running turn. It
@@ -228,10 +299,26 @@ final class AppModel: ObservableObject {
     /// happening. Every run passes through the three functions below, so the
     /// activity is started, updated and ended from one place each.
     private let liveActivity = LiveActivityController()
+    /// Reads Health (steps, active energy, glucose) and hands snapshots to the
+    /// bridge so JARVIS can answer from them. The Settings section drives the
+    /// one-time permission; the app keeps it fresh from here.
+    let health = HealthKitService()
     #endif
+
+    /// Push the latest Health reading to the bridge, if there is one and we are
+    /// connected. A no-op until the user has granted access, so it is safe to
+    /// call on every connection poll.
+    func syncHealth() async {
+        #if os(iOS)
+        await health.refresh()
+        guard let snapshot = health.snapshot, let client = try? makeClient() else { return }
+        try? await client.postHealth(snapshot)
+        #endif
+    }
 
     private func beginRun(id: String, prompt: String) {
         localRuns.append(LocalRun(id: id, prompt: prompt, startedAt: Date()))
+        runOrder.append(id)
         #if os(iOS)
         liveActivity.start(runID: id, prompt: prompt, phase: "Ich denke nach",
                            background: backgroundChoice.rawValue)
@@ -248,6 +335,7 @@ final class AppModel: ObservableObject {
     }
 
     private func finishRun(_ id: String, reply: String = "", failure: String? = nil) {
+        flushDeltas(for: id)
         #if os(iOS)
         let text = reply.isEmpty
             ? (localRuns.first { $0.id == id }?.liveResponse ?? "")
@@ -255,9 +343,89 @@ final class AppModel: ObservableObject {
         liveActivity.finish(runID: id, reply: text, failure: failure)
         #endif
         localRuns.removeAll { $0.id == id }
+        runOrder.removeAll { $0 == id }
         chatTasks[id]?.cancel()
         chatTasks[id] = nil
         if focusedRunID == id { focusedRunID = localRuns.first?.id }
+    }
+
+    /// A finished task in a split: it does not disappear, it settles. The grid
+    /// stays on screen, stops morphing, and holds its place until it has been
+    /// read aloud; only when every settled task is spoken does the split
+    /// collapse back into the single orb.
+    ///
+    /// `spokenLive` is true for the focused task, which was already being read
+    /// sentence by sentence as it streamed — its live speech *is* its reading,
+    /// so it settles already-spoken and the next task waits for that speech to
+    /// drain rather than for a second read of the same words.
+    private func settleRun(_ id: String, answer: String, failed: Bool, spokenLive: Bool,
+                           attachments: [MessageAttachment] = []) {
+        flushDeltas(for: id)
+        #if os(iOS)
+        liveActivity.finish(runID: id, reply: answer, failure: failed ? answer : nil)
+        #endif
+        localRuns.removeAll { $0.id == id }
+        chatTasks[id]?.cancel()
+        chatTasks[id] = nil
+        if focusedRunID == id { focusedRunID = localRuns.first?.id }
+
+        let readable = speaksReplies && voiceForeground && !failed && !answer.isEmpty
+        let alreadySpoken = spokenLive || !readable
+        settledRuns.append(SettledRun(id: id, prompt: "", answer: answer, failed: failed,
+                                      attachments: attachments, spoken: alreadySpoken))
+        pumpSettledReading()
+    }
+
+    /// Read the oldest still-unspoken settled task in full, one at a time. A
+    /// task is never read while any speech is playing — the focused task's live
+    /// answer, or an earlier settled task — which is exactly the rule that the
+    /// second answer is spoken only after the first has truly finished.
+    private func pumpSettledReading() {
+        guard readingRunID == nil, !speech.isSpeaking else { return }
+        guard let next = settledRuns.first(where: { !$0.spoken }) else {
+            collapseSplitIfDone()
+            return
+        }
+        guard speaksReplies, voiceForeground else {
+            // Speech is off: nothing to read, so mark it done and move on rather
+            // than leaving the split standing forever waiting to be spoken.
+            markSpoken(next.id)
+            pumpSettledReading()
+            return
+        }
+        readingRunID = next.id
+        speech.speak(next.answer, neuralClient: try? makeClient())
+    }
+
+    /// Speech has gone quiet. If it was a settled task being read, mark it and
+    /// pull the next one; otherwise (a live answer just drained) start the first
+    /// settled task that was waiting for the voice.
+    private func settledReadingSpeechFinished() {
+        if let id = readingRunID {
+            markSpoken(id)
+            readingRunID = nil
+        }
+        pumpSettledReading()
+    }
+
+    private func markSpoken(_ id: String) {
+        guard let index = settledRuns.firstIndex(where: { $0.id == id }) else { return }
+        settledRuns[index].spoken = true
+    }
+
+    /// Once nothing is running and every settled task has been read, the split
+    /// merges back into one grid. A short beat first, so the last answer's grid
+    /// is seen saturated rather than snapping away the instant it is spoken.
+    private func collapseSplitIfDone() {
+        guard localRuns.isEmpty, !settledRuns.isEmpty,
+              settledRuns.allSatisfy({ $0.spoken }) else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(650))
+            guard localRuns.isEmpty, readingRunID == nil,
+                  settledRuns.allSatisfy({ $0.spoken }) else { return }
+            settledRuns.removeAll()
+            runOrder.removeAll()
+        }
     }
     #if os(macOS)
     /// Always-on „Hey JARVIS". Off means the detector releases the microphone
@@ -315,6 +483,14 @@ final class AppModel: ObservableObject {
                 speech.stopSpeaking()
                 Task { await resumeVoice() }
             }
+        }
+    }
+    /// Opt-in only: the bridge sees no timing request and /speech receives no
+    /// correlation fields until the user explicitly enables this diagnostic.
+    @Published var latencyDebug = UserDefaults.standard.bool(forKey: "latencyDebug") {
+        didSet {
+            UserDefaults.standard.set(latencyDebug, forKey: "latencyDebug")
+            configureTiming()
         }
     }
     @Published var conversation: String
@@ -614,6 +790,36 @@ final class AppModel: ObservableObject {
         }
     }
     private var chatTasks: [String: Task<JarvisAPIClient.ChatResponse, Error>] = [:]
+    /// Streamed text that has arrived but is not on screen yet, per run.
+    ///
+    /// Every change to `localRuns` republishes the model, and SwiftUI answers
+    /// by laying out the whole chat — the history, the selectable answer text,
+    /// the scroll anchor. Doing that once per token froze the Mac app for 66
+    /// seconds on 2026-09-13 when a burst of deltas arrived at once. Tokens are
+    /// collected here instead and shown at most every `deltaFlushNanoseconds`,
+    /// which leaves the main thread idle between flushes.
+    private var pendingDeltas: [String: String] = [:]
+    private var deltaFlushes: [String: Task<Void, Never>] = [:]
+    private static let deltaFlushNanoseconds: UInt64 = 80_000_000
+
+    private func bufferDelta(_ delta: String, for id: String) {
+        pendingDeltas[id, default: ""] += delta
+        guard deltaFlushes[id] == nil else { return }
+        deltaFlushes[id] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.deltaFlushNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.flushDeltas(for: id)
+        }
+    }
+
+    /// Puts everything collected for `id` on screen now. Called by the timer,
+    /// and before anything that reads or ends the run, so no token is lost and
+    /// an activity label is never overwritten by text that arrived before it.
+    private func flushDeltas(for id: String) {
+        deltaFlushes.removeValue(forKey: id)?.cancel()
+        guard let text = pendingDeltas.removeValue(forKey: id), !text.isEmpty else { return }
+        updateRun(id) { $0.liveResponse += text; $0.activityLabel = "Ich antworte" }
+    }
     private var statusPollTask: Task<Void, Never>?
     private var bannerTask: Task<Void, Never>?
     private var notificationCursor: Int {
@@ -621,6 +827,7 @@ final class AppModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "notificationCursor") }
     }
     let speech = SpeechController()
+    private let timing = TimingEventCollector()
     private var speechObserver: AnyCancellable?
 #if os(iOS)
     private var watchConnectivityController: WatchConnectivityController?
@@ -663,6 +870,7 @@ final class AppModel: ObservableObject {
         let savedScale = UserDefaults.standard.object(forKey: "appearanceFontScale") as? Double ?? 1
         fontScale = min(max(savedScale, 0.8), 1.4)
         restoreChatHistory()
+        configureTiming()
         speech.onUtterance = { [weak self] text in
             guard let self, self.voiceModeEnabled, self.voiceForeground else { return }
             #if os(iOS)
@@ -671,6 +879,11 @@ final class AppModel: ObservableObject {
                     // Someone in the room said something that was not to him.
                     // Listening has to start again by hand: completing an
                     // utterance tore the capture down.
+                    //
+                    // Dropping it without a word is what made JARVIS look dead:
+                    // the transcript appeared and then nothing happened. So he
+                    // says, briefly, why he did not answer.
+                    self.flashBanner("Ständer-Modus: Nur Sätze mit „JARVIS, …“ werden gesendet.")
                     Task { await self.speech.start(stoppingSpeech: false) }
                     return
                 }
@@ -704,12 +917,16 @@ final class AppModel: ObservableObject {
             return self.isWorking
         }
         speech.onSpeechFinished = { [weak self] in
-            Task {
-                await self?.resumeVoice()
+            Task { @MainActor in
+                guard let self else { return }
+                // A settled task waiting for the voice reads now that it is free
+                // — and a finished read hands off to the next in line.
+                self.settledReadingSpeechFinished()
+                await self.resumeVoice()
                 #if os(macOS)
                 // He has finished talking, so the silence that decides whether
                 // a summoned pill stays starts here.
-                self?.scheduleOverlayDismiss()
+                self.scheduleOverlayDismiss()
                 #endif
             }
         }
@@ -762,6 +979,51 @@ final class AppModel: ObservableObject {
         }
         watchConnectivityController = watchController
 #endif
+    }
+
+    private func configureTiming() {
+        timing.setEnabled(latencyDebug)
+        speech.setLatencyDebugEnabled(latencyDebug)
+        guard latencyDebug else {
+            speech.onTimingInput = nil
+            speech.onTimingOutput = nil
+            return
+        }
+        speech.onTimingInput = { [weak self] input in
+            self?.timing.capture(input)
+        }
+        speech.onTimingOutput = { [weak self] output in
+            guard let self else { return }
+            if let delivery = self.timing.record(runID: output.runID, event: output.event,
+                                                  t_ms: output.t_ms, seq: output.seq) {
+                self.sendTiming(delivery)
+            }
+        }
+    }
+
+    private func finishTimingRun(_ id: String, expectsPlayback: Bool) {
+        guard latencyDebug,
+              let delivery = timing.finishRun(id, expectsPlayback: expectsPlayback) else { return }
+        sendTiming(delivery)
+    }
+
+    private func recordTiming(_ id: String, event: String, seq: Int? = nil) {
+        guard latencyDebug,
+              let delivery = timing.record(runID: id, event: event, seq: seq) else { return }
+        sendTiming(delivery)
+    }
+
+    private func sendTiming(_ delivery: TimingDelivery) {
+        guard latencyDebug, let client = try? makeClient() else { return }
+        let payload: TimingPayload
+        switch delivery {
+        case .initial(let value), .followup(let value): payload = value
+        }
+        // Detached, background-priority and best-effort: this must never hold
+        // the microphone or the audio renderer, and failures are intentionally silent.
+        Task.detached(priority: .background) {
+            try? await client.postTiming(payload)
+        }
     }
 
     private static func shouldMigrateServerURL(_ storedURL: String?) -> Bool {
@@ -974,6 +1236,8 @@ final class AppModel: ObservableObject {
             // The status board is supplementary; a temporary timeout must not
             // turn a healthy chat connection into an error banner.
         }
+        // Keep JARVIS's view of the body's numbers current, once granted.
+        await syncHealth()
         do {
             let client = try makeClient()
             let response = try await client.notifications(since: notificationCursor)
@@ -1021,6 +1285,18 @@ final class AppModel: ObservableObject {
     func dismissNotificationBanner() {
         notificationBanner = nil
         bannerTask?.cancel()
+    }
+
+    /// A short line at the top that clears itself — for something the user
+    /// should notice, not act on.
+    func flashBanner(_ text: String, seconds: Double = 4) {
+        notificationBanner = text
+        bannerTask?.cancel()
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.notificationBanner = nil
+        }
     }
 
     #if os(iOS)
@@ -1165,16 +1441,18 @@ final class AppModel: ObservableObject {
     private func resumeVoice() async {
         guard voiceModeEnabled, voiceForeground, !showingSettings, !token.isEmpty else { return }
         if speech.interruptsBySpeaking {
-            // Continuous listening: no waiting for the turn to finish. This
-            // path must always end in a live microphone, so it never returns
-            // early on a device without echo cancellation.
-            await speech.listenThrough()
+            // Continuous listening: always end in a live microphone, rebuilt
+            // clean. After an answer the capture can be alive-but-deaf (the
+            // natural voice's own engine tore down the shared input unit), and
+            // `start()` alone no-ops while `isListening` is still stalely true —
+            // so a full restart is the only reliable way back to a live mic.
+            await speech.restartListening()
             return
         }
-        // Not gated on `isWorking` any more: a task that is still running is
-        // precisely when the user may want to hand over the next one.
+        // Barge-in off: the microphone must stay closed while the voice is
+        // speaking, or it hears its own echo. Otherwise, same clean restart.
         guard !speech.isSpeaking else { return }
-        await speech.start()
+        await speech.restartListening()
     }
 
     func send(_ explicitText: String? = nil) async {
@@ -1203,6 +1481,7 @@ final class AppModel: ObservableObject {
         let attachedImage = pendingImagePath
         discardPendingImage()
         let id = UUID().uuidString
+        if latencyDebug { timing.beginRun(id) }
         beginRun(id: id, prompt: message)
         // A new task is what the user just asked for, so it is what they are
         // looking at. The older one keeps running and stays reachable.
@@ -1214,25 +1493,42 @@ final class AppModel: ObservableObject {
         let shouldSpeak = speaksReplies && voiceForeground
         do {
             let client = try makeClient()
-            if shouldSpeak { speech.beginStream(client: client) }
+            if shouldSpeak { speech.beginStream(client: client, clientRunID: latencyDebug ? id : nil) }
+            // The bridge holds the answer back until it is complete, so that a
+            // tool turn's "Ich prüfe das jetzt:" is never read aloud. The wait
+            // that leaves is bridged with a fixed word of JARVIS's own, never
+            // with model text.
+            let filler: Task<Void, Never>? = shouldSpeak ? Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled, let self, self.focusedRunID == id,
+                      self.speaksReplies, self.voiceForeground,
+                      self.localRuns.first(where: { $0.id == id })?.liveResponse.isEmpty == true
+                else { return }
+                self.speech.enqueueSentence("Moment.", measured: false)
+            } : nil
+            defer { filler?.cancel() }
             let conversationID = conversation
             let pending = Task {
-                try await client.chatStreaming(message: message, conversation: conversationID,
-                                               clientRunID: id, imagePath: attachedImage,
-                                               parallel: runsInParallel) { [weak self] frame in
+                self.recordTiming(id, event: "request_sent")
+                return try await client.chatStreaming(message: message, conversation: conversationID,
+                                                      clientRunID: id, imagePath: attachedImage,
+                                                      parallel: runsInParallel) { [weak self] frame in
                     // Guard on this run still existing, never on it being the
                     // active one — that identity check is what dropped the
                     // first task's frames the moment a second one started.
                     guard let self, self.localRuns.contains(where: { $0.id == id }) else { return }
                     let isFocused = self.focusedRunID == id
                     if frame.type == "delta", let delta = frame.text {
-                        self.updateRun(id) { $0.liveResponse += delta; $0.activityLabel = "Ich antworte" }
+                        self.recordTiming(id, event: "first_text_frame")
+                        self.bufferDelta(delta, for: id)
                         let ready = sentences.append(delta)
+                        if !ready.isEmpty { filler?.cancel() }
                         if shouldSpeak && isFocused && self.speaksReplies && self.voiceForeground {
                             for sentence in ready { self.speech.enqueueSentence(sentence) }
                         }
                     } else if frame.type == "activity", let phase = frame.phase {
                         let label = JarvisAPIClient.Activity(phase: phase, tool: frame.tool ?? "").label
+                        self.flushDeltas(for: id)
                         self.updateRun(id) { $0.activityLabel = label }
                         let quiet = self.localRuns.first { $0.id == id }?.liveResponse.isEmpty ?? true
                         if phase == "tool", !announcedTool, quiet, isFocused,
@@ -1245,7 +1541,7 @@ final class AppModel: ObservableObject {
                             // the actual answer. Silence is the better filler.
                             let tool = (frame.tool ?? "").lowercased()
                             if tool.contains("search") || tool.contains("web") || tool.contains("browser") {
-                                self.speech.enqueueSentence("Ich schaue im Web nach.")
+                                self.speech.enqueueSentence("Ich schaue im Web nach.", measured: false)
                             }
                         }
                     }
@@ -1253,29 +1549,60 @@ final class AppModel: ObservableObject {
             }
             chatTasks[id] = pending
             let response = try await pending.value
+            filler?.cancel()
             guard localRuns.contains(where: { $0.id == id }) else { return }
             let wasFocused = focusedRunID == id
-            finishRun(id, reply: response.text)
+            // Part of a split: the grid stays, settles, and is read in turn.
+            let inSplit = isMultitasking
             let names = response.tools.map(\.name)
-            appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names,
-                                      attachments: response.messageAttachments))
-            connection = .online
-            if shouldSpeak && wasFocused && speaksReplies && voiceForeground {
-                for sentence in sentences.finish(finalText: response.text) { speech.enqueueSentence(sentence) }
-                speech.endStream()
-            } else if !isWorking {
-                speech.stopSpeaking()
-                await resumeVoice()
-                #if os(macOS)
-                scheduleOverlayDismiss()
-                #endif
+            let spokeLive = shouldSpeak && wasFocused
+            if inSplit {
+                var expectsPlayback = false
+                // The focused task was read live; flush the rest of it so its
+                // reading truly finishes before the next task's begins.
+                if spokeLive {
+                    for sentence in sentences.finish(finalText: response.text) { speech.enqueueSentence(sentence) }
+                    expectsPlayback = speech.endStream()
+                }
+                settleRun(id, answer: response.text, failed: false, spokenLive: spokeLive,
+                          attachments: response.messageAttachments)
+                appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names,
+                                          attachments: response.messageAttachments))
+                connection = .online
+                finishTimingRun(id, expectsPlayback: expectsPlayback)
+            } else {
+                finishRun(id, reply: response.text)
+                appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: names,
+                                          attachments: response.messageAttachments))
+                connection = .online
+                var expectsPlayback = false
+                if spokeLive && speaksReplies && voiceForeground {
+                    for sentence in sentences.finish(finalText: response.text) { speech.enqueueSentence(sentence) }
+                    expectsPlayback = speech.endStream()
+                } else if !isWorking {
+                    speech.stopSpeaking()
+                    await resumeVoice()
+                    #if os(macOS)
+                    scheduleOverlayDismiss()
+                    #endif
+                }
+                finishTimingRun(id, expectsPlayback: expectsPlayback)
             }
         } catch {
             guard localRuns.contains(where: { $0.id == id }) else { return }
             let wasFocused = focusedRunID == id
-            finishRun(id, failure: isSuspensionDrop(error) ? nil : error.localizedDescription)
-            if wasFocused { speech.stopSpeaking() }
+            let inSplit = isMultitasking
+            if inSplit {
+                if wasFocused { speech.stopSpeaking() }
+                // A failed task still occupied a grid; it settles as done (with
+                // nothing to read) so the split can collapse once the rest are.
+                settleRun(id, answer: "", failed: true, spokenLive: false)
+            } else {
+                finishRun(id, failure: isSuspensionDrop(error) ? nil : error.localizedDescription)
+                if wasFocused { speech.stopSpeaking() }
+            }
             recordFailure(error)
+            finishTimingRun(id, expectsPlayback: false)
             #if os(macOS)
             // A failed turn is still a finished one; the pill must not be left
             // standing there because the answer never came.
@@ -1301,10 +1628,17 @@ final class AppModel: ObservableObject {
         } catch { lastError = error.localizedDescription }
     }
 
-    /// Bring another running task into view. The blobs call this.
+    /// Bring another task into view: its text is shown below and, if it is
+    /// still running, it becomes the one read aloud live. Tapping the grids in
+    /// the split calls this — including a finished grid, to read its answer.
     func focusRun(_ runID: String) {
-        guard localRuns.contains(where: { $0.id == runID }) else { return }
-        speech.stopSpeaking()      // the old task's answer is no longer the one being read
+        guard runOrder.contains(runID) else { return }
+        // A settled task being read aloud must not be cut off by a tap — the
+        // sequential read is the whole point. Only switching the live-spoken
+        // running answer stops speech so the newly focused one can take over.
+        if readingRunID == nil, localRuns.contains(where: { $0.id == runID }) {
+            speech.stopSpeaking()
+        }
         focusedRunID = runID
     }
 
@@ -1333,9 +1667,12 @@ final class AppModel: ObservableObject {
         appendMessage(ChatMessage(role: .user, text: cleanText))
         do {
             let client = try makeClient()
+            if latencyDebug { timing.beginRun(requestID) }
             var sentences = SpeechSentenceBuffer()
+            recordTiming(requestID, event: "request_sent")
             let response = try await client.chatStreaming(message: cleanText, conversation: conversation, clientRunID: requestID) { [weak self] frame in
                 guard frame.type == "delta", let delta = frame.text else { return }
+                self?.recordTiming(requestID, event: "first_text_frame")
                 for sentence in sentences.append(delta) {
                     self?.watchConnectivityController?.deliverSentence(sentence, id: requestID)
                 }
@@ -1346,9 +1683,11 @@ final class AppModel: ObservableObject {
             appendMessage(ChatMessage(role: .jarvis, text: response.text, tools: response.tools.map(\.name),
                                        attachments: response.messageAttachments))
             connection = .online
+            finishTimingRun(requestID, expectsPlayback: false)
             return response.text
         } catch {
             recordFailure(error)
+            finishTimingRun(requestID, expectsPlayback: false)
             return error.localizedDescription
         }
     }

@@ -2,62 +2,134 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-/// The JARVIS mark: one tile from the app icon's grid, not the whole grid.
+/// The JARVIS glyph: one tile from the app icon that morphs into the app's
+/// Bauhaus glyphs, never a grid.
 ///
-/// The 3×3 version is the app icon and it is right at app-icon size. At the
-/// sixteen points the Dynamic Island gives it, nine rounded squares with gaps
-/// between them stop being a mark and become texture. One tile keeps the
-/// shape language — the same corner curve — and stays a shape at any size,
-/// which is what lets it pulse legibly.
-private struct GridGlyph: View {
-    var body: some View {
-        GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height)
-            RoundedRectangle(cornerRadius: side * 0.28, style: .continuous)
-                .frame(width: side, height: side)
-                .frame(width: geometry.size.width, height: geometry.size.height)
-        }
+/// A grid of tiles is the app icon; in a sixteen-point hole in the display it
+/// reads as texture. One tile keeps the shape language and stays legible. At
+/// rest it is the rounded square of the icon; while a turn runs, every phase
+/// ("Ich denke nach", "Ich suche im Web", "Ich antworte") pulls its four
+/// corners into a different glyph — circle, half circle, quarter circle,
+/// capsule — the same forms `BauhausTileShape` draws in the app. A finished
+/// turn folds back into the square; a failure turns into an orange diamond.
+///
+/// Live Activities do not run open-ended animations; they animate the change
+/// between two updates. That is exactly what morphing between glyphs needs.
+struct TileGlyph: Hashable {
+    /// Corner radii as fractions of the side: top leading, top trailing,
+    /// bottom trailing, bottom leading. 0.22 everywhere is the icon's tile.
+    var corners: (CGFloat, CGFloat, CGFloat, CGFloat)
+    /// Width and height as fractions of the frame, for capsules and the diamond.
+    var width: CGFloat = 1
+    var height: CGFloat = 1
+    var rotation: Double = 0
+
+    static let square = TileGlyph(corners: (0.22, 0.22, 0.22, 0.22))
+    static let circle = TileGlyph(corners: (0.5, 0.5, 0.5, 0.5))
+    static let diamond = TileGlyph(corners: (0.1, 0.1, 0.1, 0.1), width: 0.72, height: 0.72, rotation: 45)
+
+    /// The forms a running phase can take. Deliberately no plain square: that
+    /// one means "at rest".
+    static let working: [TileGlyph] = [
+        .circle,
+        TileGlyph(corners: (0.5, 0.5, 0, 0)),                     // half circle, top
+        TileGlyph(corners: (0, 0.5, 0.5, 0)),                     // half circle, trailing
+        TileGlyph(corners: (0, 0, 0.5, 0.5)),                     // half circle, bottom
+        TileGlyph(corners: (1, 0, 0, 0)),                         // quarter, top leading
+        TileGlyph(corners: (0, 0, 1, 0)),                         // quarter, bottom trailing
+        TileGlyph(corners: (0.5, 0.5, 0.5, 0.5), height: 0.58),   // lying capsule
+        TileGlyph(corners: (0.5, 0.5, 0.5, 0.5), width: 0.58),    // standing capsule
+    ]
+
+    static func `for`(_ state: JarvisActivityAttributes.ContentState) -> TileGlyph {
+        if state.failure != nil { return .diamond }
+        if state.isFinished { return .square }
+        // FNV-1a over the phase: Swift's hashValue is seeded per process and
+        // would give the app and the extension different glyphs.
+        var hash: UInt32 = 2_166_136_261
+        for byte in state.phase.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        return working[Int(hash % UInt32(working.count))]
+    }
+
+    static func == (lhs: TileGlyph, rhs: TileGlyph) -> Bool {
+        lhs.corners == rhs.corners && lhs.width == rhs.width
+            && lhs.height == rhs.height && lhs.rotation == rhs.rotation
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(corners.0); hasher.combine(corners.1)
+        hasher.combine(corners.2); hasher.combine(corners.3)
+        hasher.combine(width); hasher.combine(height); hasher.combine(rotation)
     }
 }
 
-/// The mark, and the one thing it has to say: working, done, or broken.
+/// A rectangle with four independently animated corner radii — the one shape
+/// every glyph above is made of, which is what lets them morph into each other.
+struct TileGlyphShape: Shape {
+    var corners: (CGFloat, CGFloat, CGFloat, CGFloat)
+
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(corners.0, corners.1), AnimatablePair(corners.2, corners.3)) }
+        set { corners = (newValue.first.first, newValue.first.second, newValue.second.first, newValue.second.second) }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        // A radius can never exceed the shorter edge, or the arcs overlap.
+        func radius(_ fraction: CGFloat) -> CGFloat { min(max(fraction, 0) * side, side) }
+        let (tl, tr, br, bl) = (radius(corners.0), radius(corners.1), radius(corners.2), radius(corners.3))
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
+        path.addArc(center: CGPoint(x: rect.maxX - tr, y: rect.minY + tr), radius: tr,
+                    startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
+        path.addArc(center: CGPoint(x: rect.maxX - br, y: rect.maxY - br), radius: br,
+                    startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+        path.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
+        path.addArc(center: CGPoint(x: rect.minX + bl, y: rect.maxY - bl), radius: bl,
+                    startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
+        path.addArc(center: CGPoint(x: rect.minX + tl, y: rect.minY + tl), radius: tl,
+                    startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// One glyph, drawn at a size in a colour.
+struct TileGlyphView: View {
+    let glyph: TileGlyph
+    var colour: Color = .white
+    var size: CGFloat
+
+    var body: some View {
+        TileGlyphShape(corners: glyph.corners)
+            .fill(colour)
+            .frame(width: size * glyph.width, height: size * glyph.height)
+            .rotationEffect(.degrees(glyph.rotation))
+            .frame(width: size, height: size)
+    }
+}
+
+/// The glyph for a run's state, morphing on every update.
 ///
-/// The breathing is the only motion left, and it is switched off in the three
-/// places motion is either wrong or impossible: when the turn is over, when
-/// the display has dimmed to its always-on state, and when the user has asked
-/// the system for less movement. A pulse that runs forever on a screen the
-/// user is not looking at is decoration, and decoration is what made this
-/// thing feel loud.
+/// White, because that is the mark and the Dynamic Island is a hole in the
+/// display. On the lock screen `tint` is the app's ink instead, because there
+/// the app's colour is the ground. Only a real failure takes a colour of its
+/// own, and it takes one because it is a warning, not decoration.
 private struct Mark: View {
     let state: JarvisActivityAttributes.ContentState
-    /// Nil on the Dynamic Island, which is a hole in the display and takes
-    /// white; set on the lock screen, where the app's colour is the ground and
-    /// the mark has to read against it.
     var tint: Color?
     var size: CGFloat = 18
 
-    @Environment(\.isLuminanceReduced) private var dimmed
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var breathing = false
-
-    private var resting: Bool { state.isFinished || state.failure != nil }
-    private var still: Bool { resting || dimmed || reduceMotion }
-
-    /// White, because that is the mark. Only a real failure takes a colour,
-    /// and it takes one because it is a warning and not decoration.
-    private var colour: Color {
-        if state.failure != nil { return .orange }
-        return tint ?? .white
-    }
 
     var body: some View {
-        GridGlyph()
-            .foregroundStyle(colour)
-            .frame(width: size, height: size)
-            .opacity(still ? 1 : (breathing ? 1 : 0.5))
-            .animation(still ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
-                       value: breathing)
-            .onAppear { breathing = true }
+        TileGlyphView(glyph: .for(state),
+                      colour: state.failure != nil ? .orange : (tint ?? .white),
+                      size: size)
+            .animation(reduceMotion ? nil : .spring(duration: 0.8, bounce: 0.2), value: state)
             .accessibilityLabel(Text(state.spokenStatus))
     }
 }
@@ -133,7 +205,7 @@ struct JarvisLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Mark(state: context.state, size: 20)
+                    Mark(state: context.state, size: 26)
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -155,36 +227,16 @@ struct JarvisLiveActivity: Widget {
             } compactLeading: {
                 Mark(state: context.state, size: 16)
             } compactTrailing: {
-                // A dot, not a word. The old version cut the phase down to its
-                // first verb — "denke", "suche" — which is a fragment of German
-                // sitting in the notch, and the single loudest thing about the
-                // old design. State is all the compact presentation owes you;
-                // the words are two millimetres away in the expanded view.
-                StateDot(state: context.state)
+                // Nothing. One glyph is the whole compact design: its form
+                // already carries the state, and a second mark next to it is
+                // what turned the island into a row of symbols. The words are
+                // two millimetres away in the expanded view.
+                EmptyView()
             } minimal: {
                 Mark(state: context.state, size: 16)
             }
             .keylineTint(context.state.failure == nil ? Color.white : Color.orange)
         }
-    }
-}
-
-/// Running, done, or broken — in six points of colour and nothing else.
-private struct StateDot: View {
-    let state: JarvisActivityAttributes.ContentState
-
-    private var colour: Color {
-        if state.failure != nil { return .orange }
-        return .white
-    }
-
-    var body: some View {
-        Circle()
-            .fill(colour)
-            // Finished is the same mark, quieter — state without a second hue.
-            .opacity(state.isFinished ? 0.45 : 1)
-            .frame(width: 6, height: 6)
-            .accessibilityLabel(Text(state.spokenStatus))
     }
 }
 
@@ -237,9 +289,7 @@ private struct StandByProvider: TimelineProvider {
 private struct StandByTile: View {
     var body: some View {
         VStack(spacing: 10) {
-            GridGlyph()
-                .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
+            TileGlyphView(glyph: .square, size: 38)
             Text("JARVIS")
                 .font(.caption.weight(.semibold))
                 .tracking(2)

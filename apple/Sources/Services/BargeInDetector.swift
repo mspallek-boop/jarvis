@@ -13,8 +13,17 @@ struct BargeInDetector {
     static let minimumCharacters = 3
     /// One partial result can appear and vanish again; two mean speech.
     static let minimumUpdates = 2
+    /// Words that stop the voice at once, on the first partial, even when
+    /// JARVIS is saying the same word himself. The user decided a stray
+    /// self-interruption is the better failure than a "Stopp" that is ignored
+    /// because the sentence being read happened to contain it.
+    static let signalWords: Set<String> = ["stopp", "stop", "warte"]
 
     private var spokenWords: Set<String> = []
+    /// Signal words already seen in this answer's transcript. The recogniser
+    /// hands over the whole transcript every time, so without this an old
+    /// "stopp" would fire again on every later partial.
+    private var signalsSeen = 0
     /// Audio lags text: while sentence N+1 is handed over, the echo of sentence
     /// N is still coming back through the microphone. Keeping the previous
     /// sentence's words stops that gap from reading as the user interrupting.
@@ -35,6 +44,7 @@ struct BargeInDetector {
     mutating func stoppedSpeaking() {
         spokenWords = []
         previousWords = []
+        signalsSeen = 0
         reset()
     }
 
@@ -52,6 +62,14 @@ struct BargeInDetector {
 
         let heard = Self.words(trimmed)
         guard !heard.isEmpty else { return false }
+        // A new "Stopp" or "Warte" needs neither a second update nor to get
+        // past the echo check.
+        let signals = heard.filter { Self.signalWords.contains($0) }.count
+        if signals > signalsSeen {
+            signalsSeen = signals
+            hasTriggered = true
+            return true
+        }
         // Every word already coming out of the speaker: this is the echo of our
         // own voice, not the user. Do not count it as an update either.
         guard !heard.allSatisfy({ spokenWords.contains($0) || previousWords.contains($0) })

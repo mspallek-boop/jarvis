@@ -37,9 +37,13 @@ def test_every_failure_path_goes_through_the_suspension_aware_recorder():
     offline_stamps = APP_MODEL.count("connection = .offline(error.localizedDescription)")
     assert offline_stamps == 2, "a request's catch block must call recordFailure instead"
     assert "recordFailure(error, announce: false)" in APP_MODEL
-    # The streaming turn is the one that fails when the phone locks.
-    stream_catch = APP_MODEL[APP_MODEL.index("guard localRuns.contains(where: { $0.id == id }) else { return }\n            let wasFocused = focusedRunID == id\n            finishRun(id, failure:"):]
-    assert "recordFailure(error)" in stream_catch[:400]
+    # The streaming turn is the one that fails when the phone locks. Its catch
+    # block is the only place that calls `finishRun(id, failure:)`, so anchor on
+    # that and confirm it still ends in the suspension-aware recorder — even now
+    # that the multitasking split routes a failed lane through `settleRun`.
+    idx = APP_MODEL.index("finishRun(id, failure:")
+    catch_block = APP_MODEL[idx:idx + 500]
+    assert "recordFailure(error)" in catch_block
 
 
 def test_returning_to_the_foreground_rechecks_the_connection():

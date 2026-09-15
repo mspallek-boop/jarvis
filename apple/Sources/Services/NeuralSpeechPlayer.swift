@@ -34,13 +34,29 @@ final class NeuralSpeechPlayer {
     // MARK: queue state
 
     private var feeder: Task<Void, Never>?
-    private var waiting: [String] = []
+    private struct QueuedSentence {
+        let text: String
+        let seq: Int?
+    }
+    private var waiting: [QueuedSentence] = []
     /// Set once the caller says no more sentences are coming, so the feeder
     /// knows an empty queue means "done" rather than "not yet".
     private var queueClosed = false
     private var queueClient: JarvisAPIClient?
+    private var queueRunID: String?
     private var onQueueFinished: (() -> Void)?
     private var onQueueFailed: ((Error, Bool) -> Void)?
+    /// Schedule time plus `presentationLatency` is the closest practical
+    /// approximation of the first audible sample for this player-node path.
+    var onPlaybackStarted: ((Double, Int?) -> Void)?
+    /// A sentence's first sample has left the speaker. Sentences are fetched
+    /// ahead, so "handed to the player" says nothing about what can be heard;
+    /// the echo filter needs the sentence that is actually coming back through
+    /// the microphone.
+    var onSentenceAudible: ((String) -> Void)?
+    /// A sentence's last sample has left the speaker. Until the next one starts,
+    /// JARVIS is silent — thinking, not talking.
+    var onSentencePlayed: ((String) -> Void)?
     /// Resumed by `enqueue` and by `endQueue`, so the feeder can wait for the
     /// next sentence without polling.
     private var arrival: CheckedContinuation<Void, Never>?
@@ -73,6 +89,7 @@ final class NeuralSpeechPlayer {
         waiting = []
         queueClosed = false
         queueClient = nil
+        queueRunID = nil
         onQueueFinished = nil
         onQueueFailed = nil
         onQueueDrained = nil
@@ -116,7 +133,7 @@ final class NeuralSpeechPlayer {
 
     /// Opens a run of sentences. The engine is left alone: a queue that starts
     /// while the previous one is still draining would otherwise clip it.
-    func beginQueue(client: JarvisAPIClient,
+    func beginQueue(client: JarvisAPIClient, clientRunID: String? = nil,
                     finished: @escaping () -> Void,
                     failed: ((Error, Bool) -> Void)?) {
         stop()
@@ -125,6 +142,7 @@ final class NeuralSpeechPlayer {
         waiting = []
         queueClosed = false
         queueClient = client
+        queueRunID = clientRunID
         onQueueFinished = finished
         onQueueFailed = failed
         startFeeder()
@@ -132,9 +150,9 @@ final class NeuralSpeechPlayer {
 
     /// Adds one sentence. Safe to call while earlier sentences are still
     /// playing — that overlap is the entire point.
-    func enqueue(_ text: String) {
+    func enqueue(_ text: String, seq: Int? = nil) {
         guard feeder != nil, !text.isEmpty else { return }
-        waiting.append(text)
+        waiting.append(QueuedSentence(text: text, seq: seq))
         resumeArrival()
     }
 
@@ -190,12 +208,14 @@ final class NeuralSpeechPlayer {
     }
 
     /// Downloads one sentence and hands its buffers straight to the player.
-    private func fetchAndSchedule(_ text: String, id: UUID) async throws {
+    private func fetchAndSchedule(_ sentence: QueuedSentence, id: UUID) async throws {
         guard let client = queueClient else { throw PlaybackError.unavailable }
-        for textChunk in SpeechText.chunks(text) {
+        var markedAudible = false
+        for textChunk in SpeechText.chunks(sentence.text) {
             try Task.checkCancellation()
             guard generation == id else { throw CancellationError() }
-            let (bytes, response) = try await URLSession.shared.bytes(for: try client.speechRequest(text: textChunk))
+            let (bytes, response) = try await URLSession.shared.bytes(for: try client.speechRequest(
+                text: textChunk, clientRunID: queueRunID, seq: sentence.seq))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   http.value(forHTTPHeaderField: "Content-Type")?.contains("application/x-ndjson") == true else {
                 throw PlaybackError.unavailable
@@ -222,8 +242,19 @@ final class NeuralSpeechPlayer {
                         }
                     }
                     startEngineIfNeeded()
+                    if !markedAudible {
+                        markedAudible = true
+                        let text = sentence.text
+                        scheduleMarker(id: id) { [weak self] in self?.onSentenceAudible?(text) }
+                    }
+                    let firstBuffer = !hasScheduledAudio
                     hasScheduledAudio = true
                     player.scheduleBuffer(buffer, completionHandler: nil)
+                    if firstBuffer {
+                        let audibleAt = TimingClock.nowMilliseconds()
+                            + (engine.outputNode.presentationLatency * 1_000)
+                        onPlaybackStarted?(audibleAt, sentence.seq)
+                    }
                 case "done":
                     completed = true
                 default:
@@ -231,6 +262,27 @@ final class NeuralSpeechPlayer {
                 }
             }
             guard completed else { throw PlaybackError.invalidStream }
+        }
+        if markedAudible {
+            let text = sentence.text
+            scheduleMarker(id: id) { [weak self] in self?.onSentencePlayed?(text) }
+        }
+    }
+
+    /// One silent frame whose `dataPlayedBack` callback fires when playback
+    /// reaches this point in the queue — the only clock that follows what is
+    /// heard rather than what was downloaded. 42 microseconds; inaudible.
+    private func scheduleMarker(id: UUID, _ reached: @escaping @MainActor () -> Void) {
+        guard let marker = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1) else { return }
+        marker.frameLength = 1
+        marker.floatChannelData?[0][0] = 0
+        player.scheduleBuffer(marker, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in
+                // A stop also completes pending buffers; those belong to an
+                // answer that is gone.
+                guard let self, self.generation == id else { return }
+                reached()
+            }
         }
     }
 

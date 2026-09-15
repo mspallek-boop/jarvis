@@ -328,6 +328,112 @@ struct OrbView: View {
 }
 
 
+/// One task the split draws: a running grid or a finished one still on screen.
+/// Deliberately a plain value with no reference to the model, so the grids can
+/// be rendered — and their split/settle/merge animation checked — in isolation.
+struct MultitaskTile: Identifiable {
+    let id: String
+    /// Stable glyph seed, so a tile's grid does not reshuffle when it stops.
+    let seed: Int
+    let running: Bool
+    let failed: Bool
+    let spoken: Bool
+    /// The status line while running ("Ich suche im Web"), empty once done.
+    let activity: String
+    /// What to show below the grid: the streaming answer while running, the
+    /// final answer once settled.
+    let body: String
+}
+
+/// The multitasking stage: one grid per task, side by side, instead of one orb
+/// with small blobs pinned around it. Several small copies of JARVIS's own grid
+/// say "these separate things are happening" far more plainly than one orb does.
+///
+/// A running grid morphs like the orb. A finished one stops on a still glyph and
+/// is drawn at full strength — saturated — while any still-running sibling dims,
+/// so the eye lands on what is done. When every grid is finished and read, the
+/// caller drops back to the single orb and this whole row collapses away.
+struct MultitaskGrids: View {
+    let tiles: [MultitaskTile]
+    let focusedID: String?
+    let ink: Color
+    let onTap: (String) -> Void
+
+    private var anyFinished: Bool { tiles.contains { !$0.running } }
+
+    /// The grid shrinks as more tasks share the row, so two read large and four
+    /// still fit across a phone. The single orb is ~174pt; a split grid is a
+    /// small fraction of it.
+    private static func side(for count: Int) -> CGFloat {
+        switch count {
+        case 0, 1, 2: return 132
+        case 3: return 104
+        default: return 78
+        }
+    }
+
+    var body: some View {
+        let count = tiles.count
+        let side = Self.side(for: count)
+
+        // Smaller rungs before scrolling. On an iPhone SE five tasks at 78pt
+        // overflowed into the scroll view, which starts at the left edge and
+        // cut the fifth grid off with nothing to say it was there. Every rung
+        // is always present — an `if` here would hand ViewThatFits an empty
+        // child that "fits" and show nothing.
+        return ViewThatFits(in: .horizontal) {
+            strip(side: side)
+            strip(side: 64)
+            strip(side: 52)
+            strip(side: 44)
+            ScrollView(.horizontal, showsIndicators: false) { strip(side: 44) }
+        }
+        .frame(height: side + 22)
+        .frame(maxWidth: .infinity)
+        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: tiles.map(\.id))
+        .animation(.easeInOut(duration: 0.45), value: anyFinished)
+    }
+
+    /// One row of grids at one size. The gap tightens with the grids so small
+    /// rungs gain real width instead of keeping the large layout's air.
+    private func strip(side: CGFloat) -> some View {
+        HStack(spacing: side >= 78 ? 18 : 10) {
+            ForEach(tiles) { tile in
+                grid(for: tile, side: side)
+            }
+        }
+        .padding(.horizontal, 8)
+    }
+
+    private func grid(for tile: MultitaskTile, side: CGFloat) -> some View {
+        let finished = !tile.running
+        // A live task next to a finished one steps back so the finished answer
+        // reads first; otherwise the focused grid leads and the rest sit close.
+        let dimmed = anyFinished && tile.running
+        let opacity: Double = finished ? 1 : (dimmed ? 0.3 : (tile.id == focusedID ? 1 : 0.88))
+        // Small 3x3 rasters, not the orb's five-by-five: fewer, larger tiles
+        // read cleanly at this size and say "a piece of what it's doing".
+        return CubeGrid(animating: tile.running, columns: 3)
+            .foregroundStyle(tile.failed ? ink.opacity(0.45) : ink)
+            .frame(width: side, height: side)
+            .scaleEffect(tile.id == focusedID ? 1 : 0.96)
+            .opacity(opacity)
+            .overlay(alignment: .bottom) {
+                // A quiet underline under the focused grid, so a tap shows a
+                // result at once — before the text below has swapped.
+                Capsule()
+                    .fill(ink.opacity(tile.id == focusedID ? 0.5 : 0))
+                    .frame(width: side * 0.34, height: 2)
+                    .offset(y: 12)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onTap(tile.id) }
+            .transition(.scale(scale: 0.55).combined(with: .opacity))
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(finished ? (tile.failed ? "Aufgabe fehlgeschlagen" : "Aufgabe fertig") : "Aufgabe läuft")
+    }
+}
+
 /// A single task, as one tile of the orb's own language: a rounded square that
 /// morphs into one of the glyphs and back.
 ///

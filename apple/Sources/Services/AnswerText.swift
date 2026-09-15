@@ -59,6 +59,11 @@ enum WakePhrase {
     static let variants = [
         "hey jarvis", "hey järvis", "hey dscharvis", "hey charvis",
         "hey service", "hey jervis", "hey jarwis", "hi jarvis", "ok jarvis",
+        // The name alone, as people actually address him: "JARVIS, wie spät
+        // ist es?". Listed after the greetings so "Hey Jarvis" is still taken
+        // off whole. "Service" stays greeting-only — as a bare word it is far
+        // too common to count as being called.
+        "jarvis", "järvis", "dscharvis", "charvis", "jervis", "jarwis",
     ]
 
     /// The sentence with the name taken off the front, **as it was said**.

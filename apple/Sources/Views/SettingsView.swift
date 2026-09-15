@@ -32,9 +32,14 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                HealthSettingsSection(health: model.health)
                 #endif
                 Section("Sprache") {
                     Toggle("Antworten vorlesen", isOn: $model.speaksReplies)
+                    Toggle("Latenz-Debug", isOn: $model.latencyDebug)
+                    Text("Misst nur technische Zeitpunkte eines Sprach-Turns. Es werden keine gesprochenen oder geschriebenen Texte übertragen.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Toggle("Natürliche Stimme vom Mac", isOn: Binding(
                         get: { model.speech.usesNaturalVoice },
                         set: { model.speech.usesNaturalVoice = $0 }
@@ -312,3 +317,57 @@ struct SettingsView: View {
         .accessibilityAddTraits(model.backgroundChoice == background ? .isSelected : [])
     }
 }
+
+#if os(iOS)
+/// The Health section: one button to grant read access, then today's steps and
+/// active energy and the latest glucose reading, straight from HealthKit.
+private struct HealthSettingsSection: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var health: HealthKitService
+
+    var body: some View {
+        Section("Gesundheit") {
+            if !health.isAvailable {
+                Text("Health ist auf diesem Gerät nicht verfügbar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                LabeledContent("Schritte heute",
+                               value: health.steps.map { "\($0)" } ?? "—")
+                LabeledContent("Aktive Kalorien heute",
+                               value: health.activeEnergy.map { "\(Int($0.rounded())) kcal" } ?? "—")
+                LabeledContent("Blutzucker") {
+                    if let glucose = health.glucose {
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text("\(Int(glucose.rounded())) mg/dL")
+                            if let date = health.glucoseDate {
+                                Text(date, format: .dateTime.day().month().hour().minute())
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        Text("—")
+                    }
+                }
+                Button(health.access == .asked ? "Aktualisieren" : "Health-Zugriff erlauben…") {
+                    Task {
+                        if health.access != .asked { await health.requestAuthorization() }
+                        // Read again and hand the values to the bridge for JARVIS.
+                        await model.syncHealth()
+                    }
+                }
+                if let error = health.lastError {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("JARVIS liest nur — Schritte, aktive Kalorien und Blutzucker. Es wird nichts in Health geschrieben. Freigeben tust du jede Größe einzeln im Health-Dialog.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task {
+            if health.access == .asked { await health.refresh() }
+        }
+    }
+}
+#endif

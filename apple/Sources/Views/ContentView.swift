@@ -23,6 +23,9 @@ struct ContentView: View {
     #endif
     @State private var runsExpanded = false
     @State private var openStandinID: String?
+    /// Several standing tasks collapse into one subtle line above the grid; this
+    /// opens that group into the full list.
+    @State private var standingExpanded = false
     @State private var voiceControlIsVisible = true
     @Namespace private var thinkingOrbNamespace
 
@@ -60,6 +63,9 @@ struct ContentView: View {
             background.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
+                #if os(iOS)
+                if model.dockModeEnabled { dockModeLine }
+                #endif
                 connectionBanner
                 if let banner = model.notificationBanner {
                     Text(banner)
@@ -216,6 +222,10 @@ struct ContentView: View {
                     )
             }
         }
+        // A picture opens large over everything, the history drawer included.
+        .overlay {
+            PictureViewer(viewing: $model.viewing)
+        }
         // The StandBy tile and the Home Screen widget both point here. A phone
         // on a stand should not need two taps and a look to start talking.
         .onOpenURL { url in
@@ -229,6 +239,16 @@ struct ContentView: View {
             default: break
             }
         }
+        #if os(iOS)
+        // „Hey Siri, hey JARVIS“ while the app is already running.
+        .onReceive(NotificationCenter.default.publisher(for: ListenRequest.notification)) { _ in
+            guard ListenRequest.take() else { return }
+            Task {
+                await model.setVoiceForeground(true)
+                await model.speech.start()
+            }
+        }
+        #endif
         .sheet(isPresented: $model.showingSettings) {
             SettingsView().environmentObject(model)
         }
@@ -242,6 +262,12 @@ struct ContentView: View {
             model.tidyLiveActivities()
             #endif
             await model.setVoiceForeground(true)
+            #if os(iOS)
+            // A cold start by Siri: the request was made before this view
+            // existed to hear it. Listening needs no connection, so it does
+            // not wait for the check below.
+            if ListenRequest.take() { await model.speech.start() }
+            #endif
             await model.checkConnection()
             #if os(macOS)
             // A window built fresh — first launch, or the Dock reopening one
@@ -351,57 +377,6 @@ struct ContentView: View {
         .padding(.vertical, 18)
     }
 
-    /// The other running tasks. The focused task is already the large orb, so
-    /// it is deliberately not repeated in this row. With the bridge's four
-    /// parallel lanes that leaves at most three visible blobs.
-    ///
-    /// A client can still have more *queued* requests than those lanes. Keep
-    /// the row horizontally scrollable for that case: an `HStack` with an
-    /// unbounded number of fixed-size buttons eventually overflows its parent
-    /// and SwiftUI may drop the entire row during its animated relayout.
-    /// One blob per other running task. The focused one is the large orb, so
-    /// it is deliberately not repeated here.
-    private var blobRow: some View {
-        HStack(spacing: 14) {
-            ForEach(model.localRuns.filter { $0.id != model.focusedRunID }) { run in
-                Button { withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(run.id) } } label: {
-                    // Brighter and a little larger than it was: at 30 points and
-                    // half opacity a single Bauhaus tile read as a plain grey
-                    // square rather than as one of JARVIS's own glyphs.
-                    TaskBlobView(size: 34, color: ink, seed: run.id.hashValue)
-                        .opacity(0.75)
-                        // Small on purpose, but never small to hit.
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                #if os(macOS)
-                .focusable(false)
-                #endif
-                .accessibilityLabel("Aufgabe anzeigen: \(run.prompt.prefix(60))")
-                .help(String(run.prompt.prefix(80)))
-                .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .padding(.horizontal, 12)
-    }
-
-    private var taskBlobs: some View {
-        // Centred when the row fits, scrolling when it does not — and neither
-        // job may be given to a GeometryReader. That reader is greedy: it
-        // claims the space around it and anchors its content top-leading, so
-        // the row jumped out of the column and sat in the window's corner.
-        // `ViewThatFits` asks the same question without taking any space.
-        ViewThatFits(in: .horizontal) {
-            blobRow
-            ScrollView(.horizontal, showsIndicators: false) { blobRow }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: model.localRuns.count > 1 ? 44 : 0)
-        .opacity(model.localRuns.count > 1 ? 1 : 0)
-        .allowsHitTesting(model.localRuns.count > 1)
-        .animation(.easeInOut(duration: 0.25), value: model.localRuns.count)
-    }
 
     /// What is still running without the app: one quiet line per stand-in,
     /// with the time left on it.
@@ -414,52 +389,136 @@ struct ContentView: View {
     /// clock runs out.
     private var standingTasks: some View {
         VStack(spacing: 6) {
-            ForEach(model.standins) { standin in
-                let open = openStandinID == standin.id
-                VStack(spacing: 10) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.26)) {
-                            openStandinID = open ? nil : standin.id
-                        }
-                    } label: {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            let left = standin.endsAt.timeIntervalSince(context.date)
-                            HStack(spacing: 8) {
-                                Image(systemName: "person.wave.2")
-                                    .font(.system(size: 10))
-                                Text(standin.name)
-                                Text("·")
-                                Text(Self.timeLeft(left))
-                                    .monospacedDigit()
-                                if standin.exchanges > 0 {
-                                    Text("· \(standin.exchanges) \(standin.exchanges == 1 ? "Nachricht" : "Nachrichten")")
-                                }
-                                if !standin.announced {
-                                    // She was never told, so the line says so
-                                    // rather than letting the user assume.
-                                    Text("· ohne Ansage")
-                                }
-                                Image(systemName: open ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 8))
-                                    .opacity(0.7)
-                            }
-                            .font(.caption2)
-                            .tracking(0.8)
-                            .foregroundStyle(ink.opacity(open ? 0.75 : left <= 300 ? 0.62 : 0.4))
-                            .contentShape(Rectangle())
-                        }
+            if model.standins.count >= 2 {
+                // Several at once would stack into a wall of lines over the
+                // grid, so they collapse into one quiet line — still floating
+                // there, just folded — that opens into the full list on a tap.
+                Button {
+                    withAnimation(.easeInOut(duration: 0.26)) { standingExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 10))
+                        Text("\(model.standins.count) Daueraufträge")
+                        Image(systemName: standingExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8))
+                            .opacity(0.7)
                     }
-                    .buttonStyle(.plain)
-                    #if os(macOS)
-                    .focusable(false)
-                    #endif
-                    .accessibilityLabel("Vertretung für \(standin.name), \(standin.exchanges) Nachrichten")
-
-                    if open { standinDetail(standin) }
+                    .font(.caption2)
+                    .tracking(0.8)
+                    .foregroundStyle(ink.opacity(standingExpanded ? 0.6 : 0.4))
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .focusable(false)
+                #endif
+                .accessibilityLabel("\(model.standins.count) Daueraufträge, \(standingExpanded ? "zugeklappt" : "aufklappen")")
+                if standingExpanded {
+                    ForEach(model.standins) { standingRow($0) }
+                }
+            } else {
+                ForEach(model.standins) { standingRow($0) }
             }
         }
+        .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.3), value: model.standins)
+        .animation(.easeInOut(duration: 0.26), value: standingExpanded)
+    }
+
+    /// One standing task, by kind.
+    @ViewBuilder
+    private func standingRow(_ task: JarvisAPIClient.Standin) -> some View {
+        switch task.kindResolved {
+        case "watch": watchRow(task)
+        case "call": callRow(task)
+        default: standinRow(task)
+        }
+    }
+
+    /// A chat stand-in: expandable, because it has a history worth opening.
+    @ViewBuilder
+    private func standinRow(_ standin: JarvisAPIClient.Standin) -> some View {
+        let open = openStandinID == standin.id
+        VStack(spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.26)) {
+                    openStandinID = open ? nil : standin.id
+                }
+            } label: {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let left = standin.endsAt.timeIntervalSince(context.date)
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.wave.2")
+                            .font(.system(size: 10))
+                        Text(standin.name)
+                        Text("·")
+                        Text(Self.timeLeft(left))
+                            .monospacedDigit()
+                        if standin.exchanges > 0 {
+                            Text("· \(standin.exchanges) \(standin.exchanges == 1 ? "Nachricht" : "Nachrichten")")
+                        }
+                        if !standin.announced {
+                            // She was never told, so the line says so
+                            // rather than letting the user assume.
+                            Text("· ohne Ansage")
+                        }
+                        Image(systemName: open ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8))
+                            .opacity(0.7)
+                    }
+                    .font(.caption2)
+                    .tracking(0.8)
+                    .foregroundStyle(ink.opacity(open ? 0.75 : left <= 300 ? 0.62 : 0.4))
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+            #if os(macOS)
+            .focusable(false)
+            #endif
+            .accessibilityLabel("Vertretung für \(standin.name), \(standin.exchanges) Nachrichten")
+
+            if open { standinDetail(standin) }
+        }
+    }
+
+    /// A reply-watcher: JARVIS holding a chat open for an answer. One quiet
+    /// line, no history to open — it is a wait, not a conversation.
+    private func watchRow(_ watch: JarvisAPIClient.Standin) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let left = watch.endsAt.timeIntervalSince(context.date)
+            HStack(spacing: 8) {
+                Image(systemName: "ellipsis.bubble")
+                    .font(.system(size: 10))
+                Text("Warte auf Antwort von \(watch.name)")
+                Text("·")
+                Text(Self.timeLeft(left))
+                    .monospacedDigit()
+            }
+            .font(.caption2)
+            .tracking(0.8)
+            .foregroundStyle(ink.opacity(0.4))
+        }
+        .accessibilityLabel("Antwort-Wächter für \(watch.name)")
+    }
+
+    /// A phone call in progress: the one standing task that is happening this
+    /// second, so it reads a touch stronger than a watch, with its live state.
+    private func callRow(_ call: JarvisAPIClient.Standin) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "phone.fill")
+                .font(.system(size: 10))
+            Text("Telefonat mit \(call.name)")
+            if let status = call.status, !status.isEmpty {
+                Text("·")
+                Text(status)
+            }
+        }
+        .font(.caption2)
+        .tracking(0.8)
+        .foregroundStyle(ink.opacity(0.6))
+        .accessibilityLabel("Telefonat mit \(call.name)\(call.status.map { ", \($0)" } ?? "")")
     }
 
     /// What has happened in this chat so far, in JARVIS's own words.
@@ -520,58 +579,68 @@ struct ContentView: View {
         VStack(spacing: 24) {
             Spacer(minLength: 20)
             standingTasks
-            // Nothing is drawn while fewer than two tasks run, so an idle app
-            // looks exactly as it did before multitasking existed.
-            taskBlobs
-            orbButton(collapsed: picturesOnStage)
-            Text(voiceLabel)
-                .font(model.appFont(.caption))
-                .tracking(1.4)
-                .foregroundStyle(ink.opacity(0.45))
-            if let error = model.speech.errorMessage ?? model.lastError {
-                Text(error)
-                    .font(model.appFont(.callout))
-                    .foregroundStyle(ink.opacity(0.65))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 28)
-            } else if !model.speech.transcript.isEmpty && model.speech.isListening {
-                Text(model.speech.transcript)
-                    .font(model.appFont(.title3))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(5)
-                    .padding(.horizontal, 28)
-            } else if model.isWorking && !model.liveResponse.isEmpty {
-                ScrollView {
-                    Text(AnswerText.formatted(model.liveResponse))
-                        .font(model.appFont(.callout))
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
+            // Two or more tasks split the orb into a grid each; at zero or one
+            // the stage is exactly what it was before multitasking existed.
+            if model.isMultitasking {
+                MultitaskGrids(tiles: model.taskTiles, focusedID: model.focusedRunID, ink: ink) { id in
+                    withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(id) }
                 }
-                .frame(maxHeight: 150)
-                .padding(.horizontal, 28)
-            } else if let last = model.messages.last, model.messages.count > 1 {
-                // Pictures first, then the words. Asking "which of these?" out
-                // loud only works if there is something to look at, and voice
-                // mode never drew the message list — so an answer carrying
-                // images showed its "[Bild]" placeholder and nothing else.
-                if !latestPictures.isEmpty {
-                    // Keyed by message, so every new answer unrolls afresh.
-                    VoicePictureStage(pictures: latestPictures, ink: ink)
-                        .id(last.id)
-                }
-                ScrollView {
-                    Text(last.role == .jarvis
-                         ? AnswerText.formatted(VoiceStageText.withoutPicturePlaceholders(last.text,
-                                                                                          hasPictures: !latestPictures.isEmpty))
-                         : AttributedString(last.text))
+                .transition(.scale(scale: 0.86).combined(with: .opacity))
+                ScrollView { splitTexts }
+                    .scrollIndicators(.hidden)
+                    .frame(maxHeight: 260)
+            } else {
+                orbButton(collapsed: picturesOnStage)
+                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+                Text(voiceLabel)
+                    .font(model.appFont(.caption))
+                    .tracking(1.4)
+                    .foregroundStyle(ink.opacity(0.45))
+                if let error = model.speech.errorMessage ?? model.lastError {
+                    Text(error)
                         .font(model.appFont(.callout))
                         .foregroundStyle(ink.opacity(0.65))
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 28)
+                } else if !model.speech.transcript.isEmpty && model.speech.isListening {
+                    Text(model.speech.transcript)
+                        .font(model.appFont(.title3))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(5)
+                        .padding(.horizontal, 28)
+                } else if model.isWorking && !model.liveResponse.isEmpty {
+                    ScrollView {
+                        Text(AnswerText.formatted(model.liveResponse))
+                            .font(model.appFont(.callout))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .frame(maxHeight: 150)
+                    .padding(.horizontal, 28)
+                } else if let last = model.messages.last, model.messages.count > 1 {
+                    // Pictures first, then the words. Asking "which of these?" out
+                    // loud only works if there is something to look at, and voice
+                    // mode never drew the message list — so an answer carrying
+                    // images showed its "[Bild]" placeholder and nothing else.
+                    if !latestPictures.isEmpty {
+                        // Keyed by message, so every new answer unrolls afresh.
+                        VoicePictureStage(pictures: latestPictures, ink: ink)
+                            .id(last.id)
+                    }
+                    ScrollView {
+                        Text(last.role == .jarvis
+                             ? AnswerText.formatted(VoiceStageText.withoutPicturePlaceholders(last.text,
+                                                                                              hasPictures: !latestPictures.isEmpty))
+                             : AttributedString(last.text))
+                            .font(model.appFont(.callout))
+                            .foregroundStyle(ink.opacity(0.65))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(maxHeight: latestPictures.isEmpty ? 150 : 96)
+                    .padding(.horizontal, 28)
                 }
-                .scrollIndicators(.hidden)
-                .frame(maxHeight: latestPictures.isEmpty ? 150 : 96)
-                .padding(.horizontal, 28)
             }
             Spacer(minLength: 20)
         }
@@ -579,6 +648,50 @@ struct ContentView: View {
         // The orb's height changes when it folds; without this the label and
         // the text below would jump while the tiles glide.
         .animation(.spring(response: 0.5, dampingFraction: 0.82), value: picturesOnStage)
+        // Splitting into grids and merging back is one clean spring, not a cut.
+        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: model.isMultitasking)
+    }
+
+    /// The tasks' words, stacked with a wide gap so two answers never read as
+    /// one. While a task runs this is its status line and streaming answer;
+    /// once it settles it is the finished answer. Tapping a block focuses that
+    /// task — the same as tapping its grid.
+    private var splitTexts: some View {
+        VStack(spacing: 30) {
+            ForEach(model.taskTiles) { tile in
+                let focused = tile.id == model.focusedRunID
+                VStack(spacing: 8) {
+                    Text(tile.running ? tile.activity : (tile.failed ? "Fehlgeschlagen" : "Fertig"))
+                        .font(.caption2.monospaced())
+                        .tracking(1.4)
+                        .foregroundStyle(ink.opacity(focused ? 0.6 : 0.34))
+                    // Pictures first, then the words — the same as the single
+                    // stage. Without this a finished task in the split showed
+                    // only its "[Bild]" markers.
+                    let pictures = tile.running ? [] : model.settledPictures(for: tile.id)
+                    if !pictures.isEmpty {
+                        VoicePictureStage(pictures: pictures, ink: ink)
+                            .id(tile.id)
+                    }
+                    let words = VoiceStageText.withoutPicturePlaceholders(tile.body,
+                                                                          hasPictures: !pictures.isEmpty)
+                    if !words.isEmpty {
+                        Text(AnswerText.formatted(words))
+                            .font(model.appFont(.callout))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(ink.opacity(tile.running && !focused ? 0.4 : 0.72))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.28)) { model.focusRun(tile.id) }
+                }
+            }
+        }
+        .padding(.horizontal, 28)
+        .animation(.easeInOut(duration: 0.3), value: model.taskTiles.map(\.id))
     }
 
     /// The pictures from the last answer — at most three, because the point is
@@ -658,6 +771,34 @@ struct ContentView: View {
         .help(isTyping ? "Sprachmodus" : "Tippen")
     }
 
+    #if os(iOS)
+    /// The stand mode, said out loud under the header. It answers only what
+    /// starts with his name, and invisible that looked like JARVIS had stopped
+    /// listening. A line rather than a chip in the header: the header is full
+    /// on a phone, and a line has room to state the rule itself.
+    private var dockModeLine: some View {
+        Button { model.showingSettings = true } label: {
+            HStack(spacing: 6) {
+                Text("Ständer-Modus")
+                    .font(model.appFont(.caption, weight: .semibold))
+                Text("· nur Sätze mit „JARVIS, …“")
+                    .font(model.appFont(.caption))
+                    .foregroundStyle(ink.opacity(0.6))
+                Spacer(minLength: 0)
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 20)
+            .frame(minHeight: 32)
+            .background(ink.opacity(0.045))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Ständer-Modus aktiv. Nur Sätze, die mit JARVIS beginnen, werden gesendet.")
+        .accessibilityHint("Öffnet die Einstellungen.")
+    }
+    #endif
+
     private var header: some View {
         HStack(spacing: 8) {
             // Leading, because that is the edge the panel comes from and the
@@ -673,6 +814,8 @@ struct ContentView: View {
             Text("JARVIS")
                 .font(model.appFont(.caption, weight: .semibold))
                 .tracking(2.4)
+                .lineLimit(1)
+                .fixedSize()
             Circle()
                 .fill(ink.opacity(model.connection == .online ? 1 : connectionOpacity))
                 .frame(width: 5, height: 5)

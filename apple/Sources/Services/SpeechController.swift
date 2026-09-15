@@ -85,6 +85,10 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     @Published private(set) var microphoneMuted = UserDefaults.standard.bool(forKey: "microphoneMuted")
     var onUtterance: ((String) -> Void)?
     var onSpeechFinished: (() -> Void)?
+    /// Nil while latency debug is off, so recognition and playback retain their
+    /// normal paths without producing measurement work or network requests.
+    var onTimingInput: ((TimingInputEvent) -> Void)?
+    var onTimingOutput: ((TimingOutputEvent) -> Void)?
     private static var permissionRequest: Task<Bool, Never>?
     private static var permissionAttempted = false
     private var silenceTask: Task<Void, Never>?
@@ -110,20 +114,34 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     /// microphone hears the answer and would cut it off immediately, so
     /// barge-in stays off rather than breaking playback.
     private var bargeInAvailable = true
+    /// True between a streamed sentence's first and last audible sample.
+    private var neuralAudible = false
+    /// Room reverb and the recogniser's lag keep the last words arriving for a
+    /// moment after the speaker has gone quiet.
+    private var echoTailEnds = Date.distantPast
+    private static let echoTail: TimeInterval = 0.6
     private var captureID = UUID()
     private var tapInstalled = false
     private var activeUtterance: AVSpeechUtterance?
     private let neuralPlayer = NeuralSpeechPlayer()
     private var neuralTask: Task<Void, Never>?
     private var speechGeneration = UUID()
-    private var queuedSentences: [String] = []
+    private struct QueuedSentence {
+        let text: String
+        let seq: Int?
+    }
+    private var queuedSentences: [QueuedSentence] = []
     private var streamIsOpen = false
+    private var hadSentenceInStream = false
     /// True once this stream has actually produced sound. Until then nothing is
     /// coming out of the speaker, so what the microphone hears is the user.
     private var hasPlayedInStream = false
     private var streamClient: JarvisAPIClient?
     /// True while the natural voice is taking sentences into its own queue.
     private var neuralStreamOpen = false
+    private var timingRunID: String?
+    private var nextTimingSequence = 0
+    private var systemSpeechSequence: Int?
     /// What was handed to that queue, kept only so a failure before the first
     /// sound can still be spoken by the system voice.
     private var pendingNeuralText = ""
@@ -203,6 +221,19 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         super.init()
         synthesizer.delegate = self
         neuralPlayer.playbackSpeed = playbackSpeed
+        neuralPlayer.onPlaybackStarted = { [weak self] time, seq in
+            self?.recordTiming("playback_started", at: time, seq: seq)
+        }
+        neuralPlayer.onSentenceAudible = { [weak self] text in
+            guard let self else { return }
+            self.neuralAudible = true
+            if self.listensWhileSpeaking { self.bargeIn.nowSpeaking(text) }
+        }
+        neuralPlayer.onSentencePlayed = { [weak self] _ in
+            guard let self else { return }
+            self.neuralAudible = false
+            self.echoTailEnds = Date().addingTimeInterval(Self.echoTail)
+        }
     }
 
     private static func storedVocabulary() -> [String] {
@@ -361,11 +392,13 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
                         // as evidence that the user cut in.
                         guard self.interruptsBySpeaking, self.bargeInAvailable,
                               self.bargeIn.shouldInterrupt(partial: text) else { return }
-                        self.stopSpeaking()
+                        self.recordTiming("bargein_detected")
+                        self.stopSpeaking(reportAudioStopped: true)
                     }
                     if text != self.transcript {
                         self.transcript = text
                         self.lastHeard = Date()
+                        self.onTimingInput?(.speechEnd(TimingClock.nowMilliseconds()))
                         // Words arrived, so the recogniser is healthy: the
                         // restart budget is about a recogniser that is not.
                         self.segmentRestarts = 0
@@ -443,6 +476,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     }
 
     private func completeUtterance() {
+        onTimingInput?(.endpointFired(TimingClock.nowMilliseconds()))
         if let text = stop() { onUtterance?(text) }
     }
 
@@ -451,16 +485,21 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         stopSpeaking()
     }
 
-    func stopSpeaking() {
+    func stopSpeaking(reportAudioStopped: Bool = false) {
+        if reportAudioStopped { recordTiming("audio_stopped") }
         queuedSentences = []
         streamIsOpen = false
         neuralStreamOpen = false
         pendingNeuralText = ""
         hasPlayedInStream = false
+        neuralAudible = false
+        echoTailEnds = .distantPast
         // Nothing is coming out of the speaker any more, so the user's words
         // must stop being mistaken for our own echo.
         bargeIn.stoppedSpeaking()
         streamClient = nil
+        timingRunID = nil
+        systemSpeechSequence = nil
         stopCurrentOutput()
     }
 
@@ -480,46 +519,98 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         return result.isEmpty ? nil : result
     }
 
-    func beginStream(client: JarvisAPIClient) {
+    /// Rebuild the microphone capture from scratch — engine, input tap and
+    /// recogniser — keeping the audio session so the rebuild is cheap.
+    ///
+    /// After a spoken answer the recognition engine can be left "running" but
+    /// deaf. The natural voice plays through its *own* `AVAudioEngine` on the
+    /// same process-wide voice-processing session; tearing that engine down at
+    /// the end of the answer stops the shared input unit from delivering buffers
+    /// to us, without stopping *our* engine. `isListening` stays `true`, so
+    /// `start()` no-ops on its `!isListening` guard, and the orb says *Ich höre
+    /// zu* while hearing nothing — until a manual tap forced a full restart.
+    /// Reopening just the recognition request is not enough (that was the first
+    /// fix, and it was not); the engine and tap have to come back too. Doing
+    /// that here is what makes listening resume on its own after every turn.
+    func restartListening() async {
+        guard !microphoneMuted else { return }
+        // finishAudio without releasing the session: stop and detach the engine,
+        // tap and recogniser and clear isListening, but keep the warmed session
+        // so start() does not pay the full voice-processing warm-up again.
+        finishAudio()
+        await start(stoppingSpeech: false)
+    }
+
+    func beginStream(client: JarvisAPIClient, clientRunID: String? = nil) {
         // Deliberately not `suspend()`. Closing the capture here is what made
         // the microphone deaf for the whole thinking phase: the answer had not
         // started yet, so there was no echo to protect against — only a user
         // who could not hand over a second task while the first one ran.
         stopSpeaking()
         streamIsOpen = true
+        hadSentenceInStream = false
         hasPlayedInStream = false
         streamClient = client
         neuralStreamOpen = false
+        timingRunID = clientRunID
+        nextTimingSequence = 0
     }
 
-    func enqueueSentence(_ text: String) {
+    /// Turning diagnostics off also removes correlation from any sentences that
+    /// have not yet been requested from /speech.
+    func setLatencyDebugEnabled(_ enabled: Bool) {
+        if !enabled {
+            timingRunID = nil
+            systemSpeechSequence = nil
+        }
+    }
+
+    /// `measured: false` is for JARVIS's own fixed words ("Moment."), which
+    /// must not pass for the answer's first sentence in the Messmodus log.
+    func enqueueSentence(_ text: String, measured: Bool = true) {
         guard streamIsOpen, !text.isEmpty else { return }
+        let seq: Int?
+        if timingRunID != nil && measured {
+            seq = nextTimingSequence
+            nextTimingSequence += 1
+            recordTiming("first_sentence_enqueued", seq: seq)
+        } else {
+            seq = nil
+        }
         // The natural voice takes sentences into a queue that fetches ahead of
         // playback. Handing them over one at a time and waiting for each to
         // finish is what put a full download — six tenths of a second to well
         // over one — into every sentence boundary.
         if usesNaturalVoice, let client = streamClient {
+            hadSentenceInStream = true
             if !neuralStreamOpen { openNeuralStream(client: client) }
-            if listensWhileSpeaking { bargeIn.nowSpeaking(text) }
+            // Not `bargeIn.nowSpeaking` here: this sentence may not be heard for
+            // several seconds, and marking it now made the echo of the sentence
+            // actually playing count as the user cutting in. The player reports
+            // the moment it becomes audible.
             errorMessage = nil
             hasPlayedInStream = true
             isSpeaking = true
             pendingNeuralText += pendingNeuralText.isEmpty ? text : " " + text
-            neuralPlayer.enqueue(text)
+            neuralPlayer.enqueue(text, seq: seq)
             ensureBargeInCapture()
             return
         }
-        queuedSentences.append(text)
+        hadSentenceInStream = true
+        queuedSentences.append(QueuedSentence(text: text, seq: seq))
         if !isSpeaking { playNextSentence() }
     }
 
-    func endStream() {
+    @discardableResult
+    func endStream() -> Bool {
+        let hadSentence = hadSentenceInStream
         streamIsOpen = false
         if neuralStreamOpen {
             neuralPlayer.endQueue()
-            return
+            return hadSentence
         }
         if !isSpeaking { playNextSentence() }
+        return hadSentence
     }
 
     /// Opens the gapless queue for one answer.
@@ -529,7 +620,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         speechGeneration = id
         neuralPlayer.managesAudioSession = !listensWhileSpeaking
         if !listensWhileSpeaking { finishAudio() }
-        neuralPlayer.beginQueue(client: client) { [weak self] in
+        neuralPlayer.beginQueue(client: client, clientRunID: timingRunID) { [weak self] in
             guard let self, self.speechGeneration == id else { return }
             self.neuralStreamOpen = false
             self.outputFinished()
@@ -549,7 +640,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
                 self.isSpeaking = false
                 let pending = self.pendingNeuralText
                 self.pendingNeuralText = ""
-                if pending.isEmpty { self.outputFinished() } else { self.speakSystem(pending) }
+                if pending.isEmpty { self.outputFinished() } else { self.speakSystem(pending, seq: 0) }
             }
         }
     }
@@ -557,7 +648,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     private func playNextSentence() {
         if !queuedSentences.isEmpty {
             let next = queuedSentences.removeFirst()
-            play(next, neuralClient: streamClient)
+            play(next.text, neuralClient: streamClient, seq: next.seq)
         } else if !streamIsOpen {
             streamClient = nil
             bargeIn.stoppedSpeaking()
@@ -565,6 +656,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
             // whatever was left of it was arbitrary — sometimes a full pause,
             // sometimes none. Your turn to speak starts now, so it starts now.
             if isListening { scheduleIdleStop() }
+            timingRunID = nil
             onSpeechFinished?()
         }
     }
@@ -573,6 +665,11 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         isSpeaking = false
         neuralTask = nil
         playNextSentence()
+    }
+
+    private func recordTiming(_ event: String, at time: Double = TimingClock.nowMilliseconds(), seq: Int? = nil) {
+        guard let runID = timingRunID else { return }
+        onTimingOutput?(TimingOutputEvent(runID: runID, event: event, t_ms: time, seq: seq))
     }
 
     func speak(_ text: String, neuralClient: JarvisAPIClient? = nil) {
@@ -584,7 +681,14 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
     /// during playback, and in the gaps between two sentences of one stream.
     /// A stream that has not spoken yet is JARVIS thinking, and speech heard
     /// then is a new task, not an interruption.
-    private var echoIsInFlight: Bool { isSpeaking || (streamIsOpen && hasPlayedInStream) }
+    ///
+    /// A streamed answer knows exactly when it is audible. Its fixed "Moment."
+    /// ends long before the answer arrives, and the quiet in between is still
+    /// thinking — speech then is a second task, not an interruption.
+    private var echoIsInFlight: Bool {
+        if neuralStreamOpen { return neuralAudible || Date() < echoTailEnds }
+        return isSpeaking || (streamIsOpen && hasPlayedInStream)
+    }
 
     /// True while the microphone is meant to keep running through playback.
     private var listensWhileSpeaking: Bool { interruptsBySpeaking && bargeInAvailable }
@@ -607,7 +711,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         Task { [weak self] in await self?.start(stoppingSpeech: false) }
     }
 
-    private func play(_ text: String, neuralClient: JarvisAPIClient?) {
+    private func play(_ text: String, neuralClient: JarvisAPIClient?, seq: Int? = nil) {
         errorMessage = nil
         hasPlayedInStream = true
         if listensWhileSpeaking {
@@ -637,17 +741,17 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
                         errorMessage = "Sprachausgabe unterbrochen. Die Antwort steht im Verlauf."
                         outputFinished()
                     } else {
-                        speakSystem(text)
+                        speakSystem(text, seq: seq)
                     }
                 }
             }
         } else {
-            speakSystem(text)
+            speakSystem(text, seq: seq)
         }
         ensureBargeInCapture()
     }
 
-    private func speakSystem(_ text: String) {
+    private func speakSystem(_ text: String, seq: Int? = nil) {
         refreshVoices()
         if !listensWhileSpeaking { finishAudio() }
         stopCurrentOutput()
@@ -676,6 +780,7 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         utterance.preUtteranceDelay = 0.02
         utterance.postUtteranceDelay = 0.08
         activeUtterance = utterance
+        systemSpeechSequence = seq
         isSpeaking = true
         synthesizer.speak(utterance)
     }
@@ -689,6 +794,14 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
             if !self.listensWhileSpeaking { JarvisAudioSession.release() }
             #endif
             self.outputFinished()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in
+            guard let self, self.activeUtterance === utterance else { return }
+            self.recordTiming("playback_started", seq: self.systemSpeechSequence)
+            self.systemSpeechSequence = nil
         }
     }
 

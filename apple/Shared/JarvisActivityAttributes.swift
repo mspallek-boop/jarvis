@@ -47,10 +47,10 @@ struct JarvisActivityAttributes: ActivityAttributes {
             return "…" + trimmed.suffix(120)
         }
 
-        /// What VoiceOver says instead of reading a grid of squares.
+        /// What VoiceOver says instead of describing a shape.
         ///
-        /// The mark and the dot carry the state visually; without this they
-        /// carry it by colour alone, which `accessibility.md` rules out.
+        /// The glyph carries the state by its form and colour; without this it
+        /// would carry it visually alone, which `accessibility.md` rules out.
         var spokenStatus: String {
             if let failure { return "JARVIS: \(failure)" }
             return isFinished ? "JARVIS ist fertig" : "JARVIS: \(phase)"

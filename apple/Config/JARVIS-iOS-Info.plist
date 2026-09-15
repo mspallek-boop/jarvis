@@ -18,21 +18,6 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>JARVIS verbindet sich privat mit Hermes auf deinem Mac.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>JARVIS hört zu, während du mit ihm sprichst — auch wenn die App im Hintergrund ist oder das iPhone gesperrt.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>JARVIS wandelt deine Sprache lokal über Apples Spracherkennung in Text um.</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -44,15 +29,32 @@
 			</array>
 		</dict>
 	</array>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSHealthShareUsageDescription</key>
+	<string>JARVIS liest deine Schritte, aktiven Kalorien und deinen Blutzucker, um dich danach fragen zu lassen und dich daran zu erinnern.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>JARVIS verbindet sich privat mit Hermes auf deinem Mac.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JARVIS hört zu, während du mit ihm sprichst — auch wenn die App im Hintergrund ist oder das iPhone gesperrt.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>JARVIS wandelt deine Sprache lokal über Apples Spracherkennung in Text um.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 </dict>

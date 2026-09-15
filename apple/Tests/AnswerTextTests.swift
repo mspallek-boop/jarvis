@@ -33,6 +33,9 @@ import Foundation
         precondition(WakePhrase.after("Wie spät ist es?") == nil)     // nicht an ihn gerichtet
         precondition(WakePhrase.after("Sag Jarvis, er soll warten") == nil)  // nur erwähnt
         precondition(WakePhrase.after("") == nil)
+        precondition(WakePhrase.after("Jarvis, wie spät ist es?") == "wie spät ist es?")  // Name ohne „Hey“
+        precondition(WakePhrase.after("JARVIS") == "")
+        precondition(WakePhrase.after("Jarvisbox ist kaputt") == nil)  // nur ein Wortanfang
 
         print("17 answer rendering cases passed")
     }

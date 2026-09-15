@@ -112,6 +112,14 @@ struct JarvisAPIClient {
         let announced: Bool
         let exchanges: Int
         let history: [Note]
+        /// "standin" | "watch" | "call". Absent on a bridge from before reply-
+        /// watchers and calls joined this list, which is then a chat stand-in.
+        let kind: String?
+        /// A phone call's plain-language state ("im Gespräch"); nil otherwise.
+        let status: String?
+
+        /// The stand-in kind, defaulting an older bridge's items to "standin".
+        var kindResolved: String { kind ?? "standin" }
 
         var endsAt: Date { Date(timeIntervalSince1970: until) }
 
@@ -279,6 +287,12 @@ struct JarvisAPIClient {
         return try JSONDecoder().decode(HealthResponse.self, from: data)
     }
 
+    /// Best-effort, app-local latency points. Callers deliberately ignore both
+    /// transport and response errors: measurement must never affect a turn.
+    func postTiming(_ payload: TimingPayload) async throws {
+        let _: Data = try await request(path: "timing", method: "POST", body: payload, timeout: 8)
+    }
+
     func runs() async throws -> RunsResponse {
         let data = try await request(path: "runs", method: "GET", body: Optional<String>.none, timeout: 8)
         return try JSONDecoder().decode(RunsResponse.self, from: data)
@@ -302,6 +316,22 @@ struct JarvisAPIClient {
     func markNotificationsRead(through: Int) async throws {
         let _: Data = try await request(path: "notifications/read", method: "POST",
                                         body: ["through": through], timeout: 8)
+    }
+
+    /// One reading of the phone's health metrics, handed to the bridge so JARVIS
+    /// can answer from it. Only what HealthKit actually returned is sent; a nil
+    /// is omitted rather than sent as zero, so "no glucose today" and "0" stay
+    /// distinct.
+    struct HealthSnapshot: Encodable {
+        let at: Double
+        let steps: Int?
+        let active_energy_kcal: Int?
+        let glucose_mgdl: Int?
+        let glucose_at: Double?
+    }
+
+    func postHealth(_ snapshot: HealthSnapshot) async throws {
+        let _: Data = try await request(path: "health", method: "POST", body: snapshot, timeout: 8)
     }
 
     func wake() async throws {
@@ -349,7 +379,7 @@ struct JarvisAPIClient {
         return response
     }
 
-    func speechRequest(text: String) throws -> URLRequest {
+    func speechRequest(text: String, clientRunID: String? = nil, seq: Int? = nil) throws -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("speech"))
         request.httpMethod = "POST"
         request.timeoutInterval = 90
@@ -358,8 +388,13 @@ struct JarvisAPIClient {
         request.setValue("application/x-ndjson", forHTTPHeaderField: "Accept")
         // The bridge rejects a voice the account does not offer, so an empty
         // value is the safe default rather than a guess.
-        request.httpBody = try JSONEncoder().encode(
-            voiceID.isEmpty ? ["text": text] : ["text": text, "voice_id": voiceID])
+        var body: [String: Any] = ["text": text]
+        if !voiceID.isEmpty { body["voice_id"] = voiceID }
+        // These correlation fields are passed only by the latency-debug path.
+        // Leaving them absent preserves the old /speech behavior exactly.
+        if let clientRunID { body["client_run_id"] = clientRunID }
+        if let seq { body["seq"] = seq }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
 

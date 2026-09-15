@@ -68,10 +68,14 @@ struct AttachmentStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(pictures) { picture in
-                InlineAttachmentImage(picture: picture, ink: ink)
-                .frame(maxWidth: .infinity, maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Button { model.openPicture(picture, in: pictures) } label: {
+                    InlineAttachmentImage(picture: picture, ink: ink)
+                        .frame(maxWidth: .infinity, maxHeight: 320)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(PicturePressStyle())
                 .accessibilityLabel(picture.title.isEmpty ? "Bild" : picture.title)
+                .accessibilityHint("Öffnet das Bild groß")
             }
             ForEach(links) { link in
                 Link(destination: URL(string: link.url) ?? URL(string: "https://example.invalid")!) {
@@ -113,6 +117,7 @@ struct VoicePictureStage: View {
     let pictures: [MessageAttachment]
     let ink: Color
 
+    @EnvironmentObject private var model: AppModel
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
@@ -121,9 +126,13 @@ struct VoicePictureStage: View {
         HStack(alignment: .top, spacing: 12) {
             ForEach(Array(pictures.enumerated()), id: \.element.id) { index, picture in
                 // The first starts as the grid's last rows land; the rest follow.
-                VoicePicture(picture: picture, ink: ink, delay: 0.22 + Double(index) * 0.08)
-                    .frame(maxWidth: single ? (compact ? .infinity : 420) : (compact ? 150 : 200),
-                           maxHeight: single ? (compact ? 380 : 400) : 220)
+                Button { model.openPicture(picture, in: pictures) } label: {
+                    VoicePicture(picture: picture, ink: ink, delay: 0.22 + Double(index) * 0.08)
+                }
+                .buttonStyle(PicturePressStyle())
+                .accessibilityHint("Öffnet das Bild groß")
+                .frame(maxWidth: single ? (compact ? .infinity : 420) : (compact ? 150 : 200),
+                       maxHeight: single ? (compact ? 380 : 400) : 220)
             }
         }
         .padding(.horizontal, compact ? 20 : 28)
@@ -190,6 +199,292 @@ struct VoicePicture: View {
                 if !Task.isCancelled { failed = true }
             }
         }
+    }
+}
+
+/// Pressed feedback for a picture that opens: a small settle, no layout change.
+struct PicturePressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: configuration.isPressed)
+    }
+}
+
+/// A picture opened large, over the whole window.
+///
+/// Nobody wrote down how this should behave, so it follows what Photos and
+/// Messages teach on both platforms. Tap a picture and it fills the window on
+/// a dark ground. It closes the ways people already try: the × button, a tap
+/// beside the picture, Escape, and on the phone a swipe down that the picture
+/// follows. Two or three pictures from one answer stay together — swipe on the
+/// phone, arrow keys or the chevrons on the Mac — with a "2 / 3" count. Pinch
+/// or double-tap zooms. Share also covers saving to Photos.
+struct PictureViewer: View {
+    @Binding var viewing: AppModel.PictureViewing?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var loaded: [String: CGImage] = [:]
+    @State private var dismissProgress: CGFloat = 0
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack {
+            if let current = viewing {
+                let pictures = current.pictures
+                let index = min(max(current.index, 0), max(pictures.count - 1, 0))
+                // Solid, as in Photos: even at 0.97 the header and the error
+                // banner behind still showed through around the controls. Only
+                // a swipe down lets the conversation back in, as it closes.
+                Color.black
+                    .opacity(1 - dismissProgress)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
+                    .accessibilityHidden(true)
+                pager(pictures: pictures, index: index)
+                chrome(pictures: pictures, index: index)
+                    .opacity(1 - dismissProgress)
+            }
+        }
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.88),
+                   value: viewing?.id)
+        .focusable(viewing != nil)
+        .focusEffectDisabled()
+        .focused($focused)
+        .onChange(of: viewing?.id) { focused = viewing != nil }
+        .onKeyPress(.leftArrow) { step(-1); return .handled }
+        .onKeyPress(.rightArrow) { step(1); return .handled }
+        .onKeyPress(.escape) {
+            guard viewing != nil else { return .ignored }
+            close()
+            return .handled
+        }
+    }
+
+    @ViewBuilder
+    private func pager(pictures: [MessageAttachment], index: Int) -> some View {
+        #if os(iOS)
+        TabView(selection: Binding(get: { index }, set: { viewing?.index = $0 })) {
+            ForEach(Array(pictures.enumerated()), id: \.element.id) { offset, picture in
+                ZoomablePicture(picture: picture, dismissProgress: $dismissProgress,
+                                onLoad: { loaded[picture.id] = $0 }, onClose: close)
+                    .tag(offset)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea()
+        #else
+        if pictures.indices.contains(index) {
+            let picture = pictures[index]
+            ZoomablePicture(picture: picture, dismissProgress: $dismissProgress,
+                            onLoad: { loaded[picture.id] = $0 }, onClose: close)
+                .id(picture.id)
+        }
+        #endif
+    }
+
+    private func chrome(pictures: [MessageAttachment], index: Int) -> some View {
+        VStack {
+            HStack(spacing: 12) {
+                if pictures.count > 1 {
+                    Text("\(index + 1) / \(pictures.count)")
+                        .font(.callout.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 14)
+                        .frame(height: 36)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .accessibilityLabel("Bild \(index + 1) von \(pictures.count)")
+                }
+                Spacer()
+                if pictures.indices.contains(index), let image = loaded[pictures[index].id] {
+                    let title = pictures[index].title.isEmpty ? "Bild" : pictures[index].title
+                    ShareLink(item: Image(decorative: image, scale: 1),
+                              preview: SharePreview(title, image: Image(decorative: image, scale: 1))) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(ViewerControlStyle())
+                    .accessibilityLabel("Teilen oder sichern")
+                }
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(ViewerControlStyle())
+                    .accessibilityLabel("Schließen")
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            Spacer()
+            #if os(macOS)
+            if pictures.count > 1 {
+                HStack(spacing: 16) {
+                    Button { step(-1) } label: { Image(systemName: "chevron.left") }
+                        .buttonStyle(ViewerControlStyle())
+                        .disabled(index == 0)
+                        .accessibilityLabel("Vorheriges Bild")
+                    Button { step(1) } label: { Image(systemName: "chevron.right") }
+                        .buttonStyle(ViewerControlStyle())
+                        .disabled(index >= pictures.count - 1)
+                        .accessibilityLabel("Nächstes Bild")
+                }
+                .padding(.bottom, 24)
+            }
+            #endif
+        }
+    }
+
+    private func step(_ delta: Int) {
+        guard let current = viewing else { return }
+        let next = current.index + delta
+        guard current.pictures.indices.contains(next) else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { viewing?.index = next }
+    }
+
+    /// Leaving is quicker than arriving, so closing never feels like waiting.
+    private func close() {
+        guard viewing != nil else { return }
+        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .easeIn(duration: 0.2)) {
+            viewing = nil
+        }
+        dismissProgress = 0
+        loaded = [:]
+    }
+}
+
+/// The round controls on the viewer: 44 points, legible on any picture.
+private struct ViewerControlStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
+            .background(.ultraThinMaterial, in: Circle())
+            .contentShape(Circle())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.38)
+    }
+}
+
+/// One picture in the viewer: pinch or double-tap to zoom, drag to pan while
+/// zoomed, and at normal size a downward drag that closes the viewer.
+private struct ZoomablePicture: View {
+    let picture: MessageAttachment
+    @Binding var dismissProgress: CGFloat
+    let onLoad: (CGImage) -> Void
+    let onClose: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var image: CGImage?
+    @State private var failed = false
+    @State private var zoom: CGFloat = 1
+    @State private var settledZoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var settledPan: CGSize = .zero
+    @State private var dismissDrag: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            // A tap beside the picture closes; the picture itself only zooms.
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { onClose() }
+                .accessibilityHidden(true)
+            if let image {
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: zoom > 1 ? 0 : 14, style: .continuous))
+                    .scaleEffect(zoom)
+                    .offset(x: pan.width, y: pan.height + dismissDrag)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 72)
+                    .onTapGesture(count: 2) { toggleZoom() }
+                    .simultaneousGesture(magnify)
+                    .simultaneousGesture(drag)
+                    .accessibilityElement()
+                    .accessibilityLabel(picture.title.isEmpty ? "Bild" : picture.title)
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityAction(named: zoom > 1 ? "Verkleinern" : "Vergrößern") { toggleZoom() }
+            } else if failed {
+                Label("Bild nicht ladbar", systemImage: "photo")
+                    .foregroundStyle(.white.opacity(0.7))
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .task(id: picture.url) {
+            do {
+                let url = picture.url
+                let task = Task.detached { try await InlineAttachmentImage.load(url) }
+                let decoded = try await withTaskCancellationHandler(operation: {
+                    try await task.value
+                }, onCancel: { task.cancel() })
+                try Task.checkCancellation()
+                image = decoded
+                onLoad(decoded)
+            } catch {
+                if !Task.isCancelled { failed = true }
+            }
+        }
+    }
+
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in zoom = min(max(settledZoom * value.magnification, 1), 4) }
+            .onEnded { _ in
+                settledZoom = zoom
+                if zoom <= 1.01 { resetZoom() }
+            }
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 14)
+            .onChanged { value in
+                if zoom > 1 {
+                    pan = CGSize(width: settledPan.width + value.translation.width,
+                                 height: settledPan.height + value.translation.height)
+                } else if value.translation.height > 0,
+                          abs(value.translation.height) > abs(value.translation.width) {
+                    dismissDrag = value.translation.height
+                    dismissProgress = min(dismissDrag / 400, 0.8)
+                }
+            }
+            .onEnded { value in
+                if zoom > 1 {
+                    settledPan = pan
+                    return
+                }
+                if dismissDrag > 140 || value.predictedEndTranslation.height > 420 {
+                    onClose()
+                } else {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
+                        dismissDrag = 0
+                        dismissProgress = 0
+                    }
+                }
+            }
+    }
+
+    private func toggleZoom() {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85)) {
+            if zoom > 1 {
+                zoom = 1
+                pan = .zero
+            } else {
+                zoom = 2.5
+            }
+        }
+        settledZoom = zoom
+        settledPan = pan
+    }
+
+    private func resetZoom() {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
+            zoom = 1
+            pan = .zero
+        }
+        settledZoom = 1
+        settledPan = .zero
     }
 }
 
