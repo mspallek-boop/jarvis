@@ -17,6 +17,7 @@ import hashlib
 import json
 import re
 import os
+import queue
 import secrets
 import shutil
 import stat
@@ -78,6 +79,149 @@ LOOKUP_PAGE = 200
 LOOKUP_MAX_PAGES = 5
 BLOCKED_PATH_PARTS = {".ssh", ".gnupg", ".hermes", "Keychains"}
 BLOCKED_FILE_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
+
+# Messmodus. Latency lives in the seams between app, bridge, Hermes and the
+# speech provider, and no single log sees all of them. While the flag file
+# exists, every seam appends one monotonic timestamp, keyed by the
+# client_run_id the app already sends. Never text: event names, counts, tool
+# and provider identifiers only. The flag is checked per event, so switching
+# it on or off needs no restart.
+TIMING_FLAG = Path(os.environ.get("JARVIS_TIMING_FLAG",
+                                  str(Path.home() / ".hermes" / "voice-timing-on")))
+TIMING_LOG = Path(os.environ.get("JARVIS_TIMING_LOG",
+                                 str(Path.home() / ".hermes" / "logs" / "voice-timing.jsonl")))
+TIMING_EVENT_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+TIMING_VALUE_RE = re.compile(r"[A-Za-z0-9_.:-]{0,64}")
+MAX_TIMING_EVENTS = 64
+# A measurement left switched on must not fill the disk. Past this the log
+# stops growing and /timing reports itself degraded; delete the file to resume.
+MAX_TIMING_LOG_BYTES = 20 * 1024 * 1024
+_TIMING_QUEUE: queue.Queue = queue.Queue(maxsize=4096)
+_TIMING_WRITER_LOCK = threading.Lock()
+_TIMING_WRITER: threading.Thread | None = None
+# False once a write failed or the log is full, until a write succeeds again.
+_TIMING_HEALTHY = True
+
+
+def timing_enabled() -> bool:
+    try:
+        return TIMING_FLAG.exists()
+    except OSError:
+        return False
+
+
+def _timing_writer() -> None:
+    """Drain the queue off the request threads.
+
+    A timestamp is only honest if taking it costs nothing. The request and audio
+    threads therefore only enqueue; this thread owns the disk, so a slow or
+    failing write can delay the log but never a turn or its speech.
+    """
+    global _TIMING_HEALTHY
+    while True:
+        line = _TIMING_QUEUE.get()
+        try:
+            TIMING_LOG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # Private, append-only, and never through a symlink someone planted.
+            fd = os.open(TIMING_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                # The mode above only applies to a new file; an older log keeps
+                # whatever it had unless it is set here.
+                os.fchmod(fd, 0o600)
+                data = line.encode("utf-8")
+                if os.fstat(fd).st_size + len(data) > MAX_TIMING_LOG_BYTES:
+                    _TIMING_HEALTHY = False
+                else:
+                    os.write(fd, data)
+                    _TIMING_HEALTHY = True
+            finally:
+                os.close(fd)
+        except OSError:
+            _TIMING_HEALTHY = False
+        finally:
+            _TIMING_QUEUE.task_done()
+
+
+def _ensure_timing_writer() -> None:
+    global _TIMING_WRITER
+    with _TIMING_WRITER_LOCK:
+        if _TIMING_WRITER is None or not _TIMING_WRITER.is_alive():
+            _TIMING_WRITER = threading.Thread(target=_timing_writer, name="timing-writer",
+                                              daemon=True)
+            _TIMING_WRITER.start()
+
+
+def flush_timing() -> None:
+    """Wait until every queued event has been written (or dropped)."""
+    _TIMING_QUEUE.join()
+
+
+def mark_timing(client_run_id: str, event: str, source: str = "bridge",
+                at_ms: float | None = None, **fields) -> bool:
+    """Queue one timing event; True if it was accepted for writing.
+
+    Measuring must never be able to break or slow a turn: no disk access here,
+    and a full queue drops the event instead of waiting.
+    """
+    if not client_run_id or not timing_enabled():
+        return False
+    record = {"t": round(time.monotonic() * 1000 if at_ms is None else at_ms, 1),
+              "wall": round(time.time(), 3), "src": source,
+              "run": client_run_id, "event": event}
+    for key, value in fields.items():
+        # Identifiers and numbers only; a free-form string could be somebody's words.
+        if isinstance(value, (bool, int, float)) or (
+                isinstance(value, str) and TIMING_VALUE_RE.fullmatch(value)):
+            record[key] = value
+    _ensure_timing_writer()
+    try:
+        _TIMING_QUEUE.put_nowait(json.dumps(record) + "\n")
+    except queue.Full:
+        return False
+    return True
+
+
+def _timing_seq(container: dict) -> int:
+    """Absent means sentence 0; present but not a small integer is a client bug."""
+    if "seq" not in container:
+        return 0
+    value = container["seq"]
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 9999:
+        raise ValueError("Ungültige seq")
+    return value
+
+
+def store_client_timing(body: dict) -> dict:
+    """Events the app measured on its own clock, appended next to the bridge's.
+
+    The app's monotonic clock is not the bridge's, so `src` records whose clock
+    a timestamp belongs to and app times are only compared with app times.
+    Everything is validated before anything is queued. `accepted` counts queued
+    events; writing happens afterwards, so a failing or full log shows up as
+    `degraded` rather than as a false success.
+    """
+    client_run_id = body.get("client_run_id")
+    events = body.get("events")
+    if not isinstance(client_run_id, str) or not CLIENT_RUN_ID_RE.fullmatch(client_run_id):
+        raise ValueError("Ungültige client_run_id")
+    if not isinstance(events, list) or not 1 <= len(events) <= MAX_TIMING_EVENTS:
+        raise ValueError(f"events muss 1 bis {MAX_TIMING_EVENTS} Einträge enthalten")
+    checked = []
+    for item in events:
+        if not isinstance(item, dict):
+            raise ValueError("Ungültiges Event")
+        name, at = item.get("event"), item.get("t_ms")
+        if not isinstance(name, str) or not TIMING_EVENT_RE.fullmatch(name):
+            raise ValueError("Ungültiger Eventname")
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 <= at < 1e13:
+            raise ValueError("Ungültiger Zeitstempel")
+        checked.append((name, float(at), _timing_seq(item)))
+    if not timing_enabled():
+        return {"ok": True, "enabled": False, "accepted": 0}
+    accepted = sum(mark_timing(client_run_id, name, source="app", at_ms=at, seq=seq)
+                   for name, at, seq in checked)
+    return {"ok": True, "enabled": True, "accepted": accepted,
+            "degraded": not _TIMING_HEALTHY}
 
 
 def load_env(path: Path = DEFAULT_ENV) -> None:
@@ -1015,6 +1159,148 @@ def active_standins() -> list:
     return sorted(items, key=lambda item: item["until"])
 
 
+# The reply-watcher's state, written by the WhatsApp watcher and read here only.
+# A watch is JARVIS holding a chat open for a reply; the app shows that it is
+# waiting and for whom, never the number or the message.
+WATCH_STATE = Path.home() / ".hermes" / "jarvis-whatsapp-watch.json"
+# Where phone/call.py keeps one JSON per call. Same default it uses, so the app
+# sees the very calls that service is running.
+PHONE_CALLS_DIR = Path(os.environ.get("JARVIS_PHONE_DIR", str(Path.home() / ".hermes" / "phone"))) / "calls"
+# Only a call that is still going belongs on the "running now" list.
+CALL_ACTIVE = {"queued", "dialing", "ringing", "in_call"}
+CALL_STATUS_LABEL = {
+    "queued": "in der Warteschlange",
+    "dialing": "wählt",
+    "ringing": "klingelt",
+    "in_call": "im Gespräch",
+}
+
+
+def _iso_epoch(value) -> float:
+    """A local-time ISO stamp (what phone/call.py writes) as a Unix timestamp,
+    or zero if it is missing or malformed — the caller falls back to now."""
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def active_watches() -> list:
+    """The reply-watchers running right now — JARVIS waiting for someone to
+    answer — in the same item shape as a stand-in, so the app lists them beside
+    it. Read-only and defensive: the file belongs to the watcher service, and
+    the contact's number never leaves this function."""
+    try:
+        watches = json.loads(WATCH_STATE.read_text()).get("watches") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(watches, dict):
+        return []
+    now = time.time()
+    items = []
+    for key, watch in watches.items():
+        if not isinstance(watch, dict):
+            continue
+        since = _number(watch.get("since"))
+        until = since + _number(watch.get("ttl_hours")) * 3600
+        if since <= 0 or until <= now:
+            continue
+        items.append({
+            "id": "watch-" + hashlib.sha256(str(key).encode()).hexdigest()[:12],
+            "kind": "watch",
+            "name": str(watch.get("name") or "").strip() or "Chat",
+            "until": until,
+            "started": since,
+            "announced": True,
+            "exchanges": 0,
+            "history": [],
+        })
+    return sorted(items, key=lambda item: item["until"])
+
+
+def active_calls() -> list:
+    """The phone calls in progress, in the same item shape as a stand-in. Only
+    a call whose status is still active and whose time limit has not passed is
+    shown; the number never leaves this function, only the callee's name and a
+    plain-language status."""
+    try:
+        paths = sorted(PHONE_CALLS_DIR.glob("*.json")) if PHONE_CALLS_DIR.is_dir() else []
+    except OSError:
+        return []
+    now = time.time()
+    items = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        status = str(record.get("status") or "")
+        if status not in CALL_ACTIVE:
+            continue
+        started = _iso_epoch(record.get("answered_at") or record.get("created_at"))
+        until = (started or now) + (_number(record.get("minutes")) or 15) * 60
+        if until <= now:
+            continue
+        items.append({
+            "id": "call-" + str(record.get("id") or hashlib.sha256(path.name.encode()).hexdigest()[:12]),
+            "kind": "call",
+            "name": str(record.get("callee") or "").strip() or "Unbekannt",
+            "until": until,
+            "started": started or now,
+            "announced": True,
+            "exchanges": 0,
+            "history": [],
+            "status": CALL_STATUS_LABEL.get(status, status),
+        })
+    return sorted(items, key=lambda item: item["until"])
+
+
+def standing_tasks() -> list:
+    """Everything that runs without the app in front of the user: stand-ins,
+    reply-watchers and phone calls, together, longest still to run first."""
+    return active_standins() + active_watches() + active_calls()
+
+
+# The phone's latest health reading, written by the app and read by JARVIS's
+# tools. One file, last-writer-wins: it is a current snapshot, not a log.
+HEALTH_STATE = Path.home() / ".hermes" / "jarvis-health.json"
+
+
+def store_health(body: dict) -> dict:
+    """Persist the latest health snapshot the app sent. Only the known numeric
+    fields are kept — a nil stays nil, so "no glucose today" and "0" differ —
+    and the write is atomic so a reader never sees half a file."""
+    if not isinstance(body, dict):
+        raise ValueError("Ungültiger Health-Body")
+
+    def _int(name):
+        value = body.get(name)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    record = {
+        "received_at": time.time(),
+        "at": _number(body.get("at")),
+        "steps": _int("steps"),
+        "active_energy_kcal": _int("active_energy_kcal"),
+        "glucose_mgdl": _int("glucose_mgdl"),
+        "glucose_at": _number(body.get("glucose_at")),
+    }
+    HEALTH_STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HEALTH_STATE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False))
+    tmp.replace(HEALTH_STATE)
+    return record
+
+
 class Notifications:
     """The one place JARVIS can tell the app something without being asked.
 
@@ -1390,6 +1676,7 @@ class HermesClient:
                                                     "conversation": conversation,
                                                     "started": time.time()}
         lock, actual = self._acquire_conversation(conversation, parallel)
+        mark_timing(client_run_id, "lock_acquired", side_lane=actual != conversation)
         try:
             if client_run_id and actual != conversation:
                 # The board must show where the turn really runs, not where it
@@ -1445,13 +1732,18 @@ class HermesClient:
         announced_text = False
         run_id = ""
         prepared = None
+        # One text segment per model call; the first delta of each is when
+        # the model started answering rather than thinking or calling tools.
+        segment_started = False
         try:
+            mark_timing(client_run_id, "hermes_request")
             with urllib.request.urlopen(request, timeout=300) as response:
                 for event, data in parse_sse(response):
                     if run_id and client_run_id:
                         self._retry_pending_stop(client_run_id, run_id)
                     if event == "run.started":
                         run_id = str(data.get("run_id") or "")
+                        mark_timing(client_run_id, "run_started")
                         if run_id and client_run_id:
                             with self._active_runs_lock:
                                 entry = self._client_runs.setdefault(client_run_id, {})
@@ -1466,6 +1758,9 @@ class HermesClient:
                                 self._chase_pending_stop(client_run_id, run_id)
                     elif event == "assistant.delta":
                         self._set_activity(client_run_id, "answering")
+                        if not segment_started:
+                            segment_started = True
+                            mark_timing(client_run_id, "text_segment_start")
                         delta = str(data.get("delta") or "")
                         parts.append(delta)
                         # Held back, not forwarded. Text written before a tool
@@ -1488,6 +1783,8 @@ class HermesClient:
                         # form the user sees instead.
                         pending.clear()
                         announced_text = False
+                        segment_started = False
+                        mark_timing(client_run_id, "tool_started", tool=name)
                         if not name.startswith("_"):
                             self._set_activity(client_run_id, "tool", name)
                             if on_event:
@@ -1496,15 +1793,19 @@ class HermesClient:
                                 "name": name,
                                 "preview": str(data.get("preview") or "")[:200],
                             })
+                    elif event in {"tool.completed", "tool.failed"}:
+                        mark_timing(client_run_id, "tool_finished", failed=event == "tool.failed")
                     elif event == "assistant.completed" and data.get("content"):
                         prepared = prepare_answer_media(str(data["content"]))
                         parts = [prepared[0]]
+                        mark_timing(client_run_id, "assistant_completed")
                         # No tool followed, so the held text was the answer.
                         # Release it now so the app can show and speak it.
                         if on_event and pending:
                             # The final API text can replace MEDIA tags with
                             # megabytes of base64. Never send either to speech.
                             on_event({"type": "delta", "text": prepared[0]})
+                            mark_timing(client_run_id, "text_forwarded")
                         pending.clear()
                     elif event in {"run.failed", "error"}:
                         raise RuntimeError(str(data.get("error") or data.get("message") or "Hermes run failed"))
@@ -1682,7 +1983,10 @@ class JarvisHandler(BaseHTTPRequestHandler):
     config: BridgeConfig
 
     def log_message(self, fmt: str, *args) -> None:
-        print(f"{self.address_string()} - {fmt % args}")
+        # Flushed: stdout goes to a launchd log file, where Python buffers it,
+        # so requests showed up minutes late and a live diagnosis read an
+        # empty log as "nothing arrived".
+        print(f"{self.address_string()} - {fmt % args}", flush=True)
 
     def _token(self) -> str:
         auth = self.headers.get("Authorization", "")
@@ -1881,7 +2185,9 @@ class JarvisHandler(BaseHTTPRequestHandler):
                                        "latest": items[-1]["id"] if items else after})
             return
         if parsed.path == "/standins":
-            items = active_standins()
+            # "standins" is the app's name for standing tasks; it now also
+            # carries reply-watchers and phone calls, each tagged by kind.
+            items = standing_tasks()
             self._json(HTTPStatus.OK, {"standins": items, "count": len(items)})
             return
         if parsed.path == "/runs":
@@ -1930,6 +2236,15 @@ class JarvisHandler(BaseHTTPRequestHandler):
             raise ValueError("Ungültige Stimme")
         text = text.strip()
         requested_voice = requested_voice.strip()
+        # Optional Messmodus correlation: which turn and which sentence of it.
+        # Absent means "not measured"; present but malformed is a client bug.
+        client_run_id = ""
+        if "client_run_id" in body:
+            client_run_id = body["client_run_id"]
+            if not isinstance(client_run_id, str) or not CLIENT_RUN_ID_RE.fullmatch(client_run_id):
+                raise ValueError("Ungültige client_run_id")
+        self._timing = (client_run_id, _timing_seq(body))
+        mark_timing(client_run_id, "tts_received", seq=self._timing[1])
         # A Piper voice is a model path inside the voices directory; an
         # ElevenLabs one is an id. Which of the two arrived decides the route.
         piper_voice = ""
@@ -2066,11 +2381,18 @@ class JarvisHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
+        client_run_id, seq = getattr(self, "_timing", ("", 0))
+        first = True
         try:
             for line in lines:
                 self.wfile.write(line)
                 self.wfile.flush()
+                if first:
+                    first = False
+                    mark_timing(client_run_id, "tts_first_audio", seq=seq, provider=provider)
+            mark_timing(client_run_id, "tts_done", seq=seq, provider=provider)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            mark_timing(client_run_id, "tts_disconnected", seq=seq)
             return
         except Exception:
             try:
@@ -2081,6 +2403,7 @@ class JarvisHandler(BaseHTTPRequestHandler):
 
     def _handle_chat_stream(self, message: str, conversation: str, client_run_id: str,
                             parallel: bool = False) -> None:
+        mark_timing(client_run_id, "received", parallel=parallel)
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-store")
@@ -2098,10 +2421,12 @@ class JarvisHandler(BaseHTTPRequestHandler):
             result = self.client.chat(message, conversation, client_run_id, on_event=emit,
                                       **({"parallel": True} if parallel else {}))
             result["duration_ms"] = round((time.monotonic() - started) * 1000)
+            mark_timing(client_run_id, "done", tools=len(result.get("tools") or []))
             emit({"type": "done", "response": result})
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            pass
+            mark_timing(client_run_id, "disconnected")
         except Exception:
+            mark_timing(client_run_id, "error")
             # Stream is already HTTP 200. Never write a second HTTP response,
             # or expose provider exception strings in an error frame.
             try:
@@ -2127,6 +2452,9 @@ class JarvisHandler(BaseHTTPRequestHandler):
             if self.path == "/speech":
                 self._handle_speech(body)
                 return
+            if self.path == "/timing":
+                self._json(HTTPStatus.OK, store_client_timing(body))
+                return
             if self.path == "/notify":
                 # Written by JARVIS's own helpers on this machine (the WhatsApp
                 # reply watcher, jarvis-notify). Same app token as everything
@@ -2151,6 +2479,16 @@ class JarvisHandler(BaseHTTPRequestHandler):
                     return
                 marked = NOTIFICATIONS.mark_read(through)
                 self._json(HTTPStatus.OK, {"marked": marked, "unread": NOTIFICATIONS.unread()})
+                return
+            if self.path == "/health":
+                # The phone's latest steps / active energy / glucose, for JARVIS
+                # to answer from. Same app token as everything else.
+                try:
+                    record = store_health(body)
+                except (ValueError, OSError) as exc:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                self._json(HTTPStatus.OK, {"ok": True, "health": record})
                 return
             if self.path in {"/chat", "/chat/stream"}:
                 message = str(body.get("message") or "").strip()

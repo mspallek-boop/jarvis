@@ -518,3 +518,100 @@ pro Name, danach wird gewartet — sonst öffnet ein Client ohne Ende Sessions.
 Verifiziert am laufenden Dienst: drei Aufgaben unter einem Namen, 1,8 / 1,9 /
 2,1 s, Gesamtdauer 3 s; `/runs` zeigte drei Einträge gleichzeitig in
 `answering`, jeder in seiner eigenen Spur.
+
+## Messmodus (2026-09-14)
+
+Zweck: messen, wo die wahrgenommene Latenz eines Sprach-Turns entsteht, pro
+`client_run_id` und über App, Bridge, Hermes und TTS hinweg. Grundlage für alle
+weiteren Voice-Optimierungen (`Jarvis Output/Voice-Architektur-Analyse.md`).
+
+### Schalter und Log
+
+- An: `touch ~/.hermes/voice-timing-on` · Aus: `rm ~/.hermes/voice-timing-on`.
+  Die Datei wird pro Event geprüft, **kein Neustart** nötig. Pfade über
+  `JARVIS_TIMING_FLAG` / `JARVIS_TIMING_LOG` überschreibbar.
+- Log: `~/.hermes/logs/voice-timing.jsonl`, eine Zeile pro Event:
+  `{"t": <ms, monotone Uhr der Quelle>, "wall": <Unix-Sekunden>, "src": "bridge"|"app",
+  "run": <client_run_id>, "event": <name>, …}`.
+- Zusatzfelder nur Zahlen, Booleans oder Kennungen (`[A-Za-z0-9_.:-]{0,64}`):
+  `seq`, `tools`, `tool`, `provider`, `parallel`, `side_lane`, `failed`.
+  **Nie Nachrichten-, Antwort- oder Sprachtext.**
+- Ohne `client_run_id` wird nichts geschrieben. Request- und Audio-Threads legen
+  Events nur in eine begrenzte Queue (4096); ein eigener Writer-Thread schreibt.
+  Volle Queue → Event verworfen. Messen kann einen Turn weder abbrechen noch
+  verzögern.
+- Datei `0600`, Verzeichnis beim Anlegen `0700`, kein Schreiben durch Symlinks,
+  harte Obergrenze 20 MB (danach wächst das Log nicht mehr; Datei löschen setzt
+  zurück).
+
+### Bridge-Events (Uhr: Mac)
+
+| Event | Wann |
+|---|---|
+| `received` | `/chat/stream` angenommen, vor den Response-Headern |
+| `lock_acquired` | Conversation-Lock erhalten (`side_lane: true` bei Nebenspur) |
+| `hermes_request` | Request an Hermes `/api/sessions/{id}/chat/stream` geht raus |
+| `run_started` | Hermes `run.started` |
+| `text_segment_start` | erstes `assistant.delta` eines Textsegments (erstes = LLM erstes Token) |
+| `tool_started` / `tool_finished` | Hermes `tool.started` / `tool.completed`·`tool.failed` |
+| `assistant_completed` | Hermes `assistant.completed` |
+| `text_forwarded` | Antworttext an die App weitergegeben |
+| `done` / `error` / `disconnected` | Stream-Ende (`tools` = Anzahl) |
+| `tts_received` / `tts_first_audio` / `tts_done` / `tts_disconnected` | `/speech` angenommen / erster Audio-Frame geschrieben / fertig / Client weg (`seq`, `provider`) |
+
+### `POST /speech` nimmt optional `client_run_id` und `seq` (neu)
+
+`{"text": …, "voice_id": …, "client_run_id": "<id des Turns>", "seq": 0}` —
+`seq` ist der Index des Satzes im Turn (0 … 9999). Beide optional; ohne sie
+verhält sich `/speech` exakt wie bisher. Ist ein Feld vorhanden, muss es gültig sein —
+auch `null`, `false`, `0` oder `""` als `client_run_id` → **400**, bevor ein
+TTS-Anbieter angesprochen wird.
+
+### `POST /timing` — auth (neu)
+
+Die App liefert ihre eigenen Messpunkte ab, gesammelt pro Turn:
+
+```json
+{"client_run_id": "…", "events": [
+  {"event": "speech_end", "t_ms": 812345.2},
+  {"event": "playback_started", "t_ms": 816901.0, "seq": 0}
+]}
+```
+
+- `t_ms`: monotone Uhr **der App** in Millisekunden (z. B. `ContinuousClock` bzw.
+  `mach_continuous_time`). App- und Bridge-Zeiten werden nie miteinander
+  verrechnet, nur innerhalb derselben Quelle.
+- 1 … 64 Events; `event` passt auf `[a-z][a-z0-9_]{0,47}`; `t_ms` Zahl in
+  `[0, 1e13)`; `seq` optional 0 … 9999. Ist irgendein Event ungültig → **400** und
+  es wird **nichts** geschrieben.
+- Antwort: `{"ok": true, "enabled": true, "accepted": 2, "degraded": false}`.
+  `accepted` = zum Schreiben angenommen (asynchron). `degraded: true` heißt: der
+  letzte Schreibversuch scheiterte oder das Log ist voll — die Messung ist
+  unvollständig. Ist der Messmodus aus: `{"ok": true, "enabled": false, "accepted": 0}`.
+- Senden darf Wiedergabe oder Mikrofon nie blockieren; Fehler ignoriert die App.
+
+**Von der Auswertung erwartete App-Events** (Namen verbindlich):
+
+| Event | Bedeutung |
+|---|---|
+| `speech_end` | Zeitpunkt, ab dem der Satzende-Timer zählt (letztes Transkript-Wachstum bzw. VAD-Sprachende) |
+| `endpoint_fired` | Satzende erkannt, Äußerung wird abgeschickt |
+| `request_sent` | `/chat/stream`-Request gestartet |
+| `first_text_frame` | erster `delta`-Frame empfangen |
+| `first_sentence_enqueued` | erster Satz an die Sprachausgabe übergeben |
+| `playback_started` | erstes Audio-Sample tatsächlich gerendert |
+| `bargein_detected` / `audio_stopped` | Unterbrechung erkannt / Wiedergabe verstummt |
+
+Weitere Events mit gültigem Namen werden gespeichert, aber nicht ausgewertet.
+Die App sendet dieselbe `client_run_id` wie beim Chat und reicht sie mit `seq`
+an `/speech` weiter.
+
+### Auswertung
+
+```bash
+.venv/bin/python scripts/voice_timing_report.py            # p50/p90 pro Span, mit/ohne Tools getrennt
+.venv/bin/python scripts/voice_timing_report.py --run <id> # Zeitleiste eines Turns
+```
+
+Wahrgenommene Latenz = `speech_end → playback_started` (App-Uhr). Quantile
+werden pro Span gebildet und nie zu einer Summe addiert.

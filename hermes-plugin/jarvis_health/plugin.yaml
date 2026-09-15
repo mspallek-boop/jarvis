@@ -1,0 +1,5 @@
+name: jarvis_health
+version: 1.0.0
+description: Read the phone's latest Apple Health snapshot (steps, active energy, glucose)
+provides_tools:
+  - health_today
