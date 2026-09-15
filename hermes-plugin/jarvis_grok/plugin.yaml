@@ -1,0 +1,6 @@
+name: jarvis_grok
+version: 1.0.0
+description: Delegate tasks to Botschaft Jarvis / Grok Bot via the local file queue (~/.hermes/grok-queue)
+provides_tools:
+  - grok_delegate
+  - grok_delegate_status

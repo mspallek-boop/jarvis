@@ -40,3 +40,13 @@ tailscale serve --bg 8770
 Die Dateiansicht ist auf `JARVIS_FILE_ROOTS` begrenzt. Versteckte Dateien,
 Hermes-Schlüssel, SSH-Schlüssel und Zertifikate bleiben unabhängig davon
 gesperrt.
+
+## Grok-Bot-Anbindung (File-Queue)
+
+Aktiv: lokale Queue unter `~/.hermes/grok-queue/` via `grok_queue.py` (kein Webhook). Details: [`GROK_BRIDGE.md`](GROK_BRIDGE.md).
+
+
+
+JARVIS mit dem Grok-Bot über dessen Inbound-Webhook. Siehe
+[`GROK_BRIDGE.md`](GROK_BRIDGE.md) für Umgebungsvariablen, Beispiel-Payloads
+und Start-/Dry-Run-Schritte.

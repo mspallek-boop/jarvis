@@ -78,3 +78,7 @@ Never speak secrets, API keys, or passwords aloud (the pipeline redacts them,
 but do not rely on it). Pause for approval on anything destructive, and before
 sending any message on the user's behalf — show the recipient and the exact
 text and wait for a clear yes.
+
+## Delegation to Botschaft Jarvis
+
+Use tools `grok_delegate` / `grok_delegate_status` (plugin `jarvis_grok`) to hand work to Botschaft Jarvis via `~/.hermes/grok-queue`. Default target: `Botschaft Jarvis`.
