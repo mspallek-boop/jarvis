@@ -474,10 +474,11 @@ dazwischen nie stoppt. Die Anweisung fordert zusätzlich zügiges, flüssiges
 Sprechen und kurze Pausen; das Tempo gehört in die Anweisung und nicht in eine
 Abspielrate, die die Tonhöhe anheben würde.
 
-Offen bleibt allein die Wahl der Stimme selbst: `cedar` ist vorläufig aktiv
-(schnellster Start, zügiges Tempo). Vergleichsproben von `ash`, `onyx`,
-`ballad`, `cedar`, `marin` und `verse` mit demselben Butler-Text liegen dem
-Nutzer vor; seine Wahl kommt in `JARVIS_TTS_OPENAI_VOICE`.
+**Erledigt am 2026-09-15:** Nach den Vergleichsproben von `ash`, `onyx`,
+`ballad`, `cedar`, `marin` und `verse` bleibt `cedar` (schnellster Start,
+zügiges Tempo). Sie steht in `JARVIS_TTS_OPENAI_VOICE` und ist jetzt auch der
+Standard der Bridge, falls der Eintrag fehlt. Das gilt für den App-Weg über die
+Bridge; das HUD im Browser spricht weiter über den Voice-Server.
 
 **Ursprünglicher Auftrag:** Die verfügbaren OpenAI-Stimmen sollen aktualisiert und
 praktisch gegeneinander getestet werden. Gesucht ist keine bloß angenehme
@@ -489,3 +490,41 @@ unnötig langen Pausen zwischen den Sätzen oder Audio-Chunks. Monet soll die
 Voice-Auswahl, das Tempo, Chunking und die Satzsegmentierung gemeinsam testen;
 die beste Kombination live im JARVIS-Weg aktivieren und mit einem kurzen
 deutschen Butler-Testtext sowie einem schnellen Mehrsatz-Test verifizieren.
+
+### 14. HealthKit — kommen die Daten wirklich an?
+**Backend-Seite erledigt am 2026-09-15; eine Produktfrage offen.**
+
+Die iPhone-App überträgt: `~/.hermes/jarvis-health.json` wird laufend
+aktualisiert (424 `POST /health` im Bridge-Log, der letzte Minuten alt), und
+Schritte sowie aktive Kalorien sind befüllt.
+
+17 dieser Übertragungen bekamen 400, jede direkt nach einer 200. Ursache: Die
+App schickt oft zwei gleichzeitig, und `store_health` schrieb beide über
+dieselbe Datei `jarvis-health.json.tmp`. Die erste Umbenennung nahm der zweiten
+Anfrage ihre Datei weg (`FileNotFoundError` → 400). Jede Übertragung schreibt
+jetzt eine eigene temporäre Datei; `HealthStoreTests` in `bridge/test_bridge.py`
+spielt die Überschneidung durch und scheitert am alten Code.
+
+**Offen, Entscheidung Marlon, Umsetzung App-seitig (Codex):** Die Fixliste
+verlangt „Zucker“, und `docs/HEALTHKIT_INTEGRATION.md` beschreibt
+Nahrungszucker (`dietarySugar`, Gramm). Die App liest aber Blutzucker
+(`bloodGlucose`, mg/dL) — und dieses Feld ist leer, weil in Health keine
+Blutzuckerwerte stehen.
+
+### 15. Nachtschicht — JARVIS arbeitet über Nacht und legt morgens Entwürfe vor
+**Gebaut am 2026-09-15.** Vorbild war ein Reel, in dem JARVIS morgens berichtet,
+was er nachts erledigt hat. Marlons Vorgaben: nur Entwürfe, Freigabe am Morgen,
+Werkzeuge nach Aufgabenart, Briefing am Mac-HUD. Beschreibung, Sicherungen und
+Bedienung in `docs/NACHTSCHICHT.md`.
+
+- Cron-Job „JARVIS Nachtschicht" um 03:00 mit Skill `jarvis-nightshift` und
+  eingeschränkten Toolsets; Bericht unter `Jarvis Output/Nachtschicht/`.
+- Code-Arbeit in einem Wegwerf-Worktree (`scripts/jarvis-nightshift-code.sh`),
+  nur Patch und Log bleiben.
+- Das Morgen-Briefing wartet ab 07:30 auf ein offenes HUD (`until`), statt
+  auszufallen (`_due_entries` in `server/server.py`, Tests in
+  `tests/test_proactive_schedule.py`).
+- SOUL: Routing nach Aufgabenart und Freigabe per „schick E2".
+
+**Offen:** Qwen Code ist nicht angemeldet (Login nur durch Marlon). Content-Entwürfe
+brauchen Projekte, die JARVIS kennt — bisher kennt er keine.

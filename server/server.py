@@ -1522,20 +1522,40 @@ async def _run_briefing(entry: dict) -> None:
         await speak_broadcast(text, priority=priority)
 
 
+def _due_entries(schedule: list, now: str, fired: set, has_clients: bool) -> list:
+    """Schedule entries to fire at `now` (HH:MM), as (key, entry) pairs.
+
+    Without `until` an entry fires in its exact minute, HUD or not. With `until`
+    it waits for a HUD: between `at` and `until` it fires on the first tick that
+    finds one open, so the morning briefing is not lost for the day because the
+    HUD came up at 07:40 instead of 07:30.
+    """
+    due = []
+    for i, entry in enumerate(schedule):
+        at = str(entry.get("at", ""))
+        key = f"{i}|{at}"
+        if key in fired:
+            continue
+        until = str(entry.get("until") or "")
+        if until:
+            if has_clients and at <= now < until:
+                due.append((key, entry))
+        elif at == now:
+            due.append((key, entry))
+    return due
+
+
 async def _scheduler_loop() -> None:
-    """Tick every 30 s; fire schedule entries whose HH:MM matches, once per day."""
+    """Tick every 30 s; fire due schedule entries, each once per day."""
     schedule = (CFG.get("proactive") or {}).get("schedule") or []
     while True:
         try:
             now = time.strftime("%H:%M")
             fired = _load_fired()
-            for i, entry in enumerate(schedule):
-                at = str(entry.get("at", ""))
-                key = f"{i}|{at}"
-                if at == now and key not in fired:
-                    fired.add(key)
-                    _save_fired(fired)
-                    asyncio.create_task(_run_briefing(entry))
+            for key, entry in _due_entries(schedule, now, fired, bool(WS_CLIENTS)):
+                fired.add(key)
+                _save_fired(fired)
+                asyncio.create_task(_run_briefing(entry))
         except Exception as exc:
             print(f"Proactive scheduler error: {exc}", flush=True)
         await asyncio.sleep(30)
