@@ -1,6 +1,6 @@
 # Relay-Delta und Lösung für JARVIS in der Cloud
 
-Stand: 2026-09-05. Autoritatives Repo: `/Users/marlon/Documents/JARVIS`,
+Stand: 2026-09-05. Autoritatives Repo: `/Users/marlon/Developer/JARVIS`,
 Branch `checkpoint/bridge-port-8770`. Abgleich mit `TARGET_ARCHITECTURE.md`.
 Diese Fassung ersetzt die Bewertung vom 2026-09-01. Sie beschreibt den aktuellen
 Code und einen noch nicht implementierten Cloud-Ausbau; kein Deployment erfolgt.

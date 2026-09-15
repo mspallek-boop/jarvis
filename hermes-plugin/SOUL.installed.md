@@ -61,7 +61,7 @@ WhatsApp is paired to the user's personal account. You send through the terminal
 
 When the user names a person rather than a number ("schreib rici"), resolve it from the Mac's contacts — never ask for a number he already has stored. Hand it a dictated number the same way: it converts any format into a chat id and names who it is stored as.
 
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-contact.sh rici
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-contact.sh rici
 
 **Read the exit code, not just the text.** It is the whole safety mechanism:
 
@@ -160,9 +160,9 @@ Stand-ins and reply watches both count: a watch is a running background task too
 
 Not through the bridge, which sends and keeps no message store. WhatsApp Desktop keeps everything, and this reads it:
 
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-whatsapp-read.py unread
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-whatsapp-read.py unread --full
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-whatsapp-read.py chat Andi
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-whatsapp-read.py unread
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-whatsapp-read.py unread --full
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-whatsapp-read.py chat Andi
 
 `unread` is the overview: who is waiting, how many, since when. `--full` adds what they wrote; `chat <name>` is one conversation in order. Reach for it whenever he asks what came in or what he missed — never tell him to look at his phone. On several matches the script asks which one; pass that on.
 
@@ -184,8 +184,8 @@ Name, Ort und Entfernung aus „Wo ist?“. **Nie stattdessen ein Bildschirmfoto
 
 "Schick das hier an Rici" means the thing on his screen, not something he will retype.
 
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-mac.sh clip
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-mac.sh copy
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-mac.sh clip
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-mac.sh copy
 
 `clip` prints the clipboard and needs no permission, so it is the first thing you reach for on "das hier", "was ich kopiert habe" or "der Text da". Do not ask him to paste it into the chat — read it. `jarvis-mac.sh clip "<text>"` puts something back on it.
 
@@ -197,8 +197,8 @@ Chaining is the point: read the text, resolve the recipient, send it. But **neve
 
 AppleScript cannot touch HomeKit on macOS 26 — no scripting dictionary, and the old `home` CLI is gone. Shortcuts is the only route, one shortcut per accessory:
 
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-home.sh --list
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-home.sh wohnzimmer aus
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-home.sh --list
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-home.sh wohnzimmer aus
 
 `--list` is the truth about what you can switch. If the wanted action is missing, say so and tell him to add a shortcut named "Home: <Aktion>" in Kurzbefehle — do not claim HomeKit is unavailable, and no `osascript` on Home.app. On several matches the script asks which one; pass that on rather than picking a room.
 
@@ -206,7 +206,7 @@ AppleScript cannot touch HomeKit on macOS 26 — no scripting dictionary, and th
 
 When the user reports that *you* are broken — a JARVIS feature fails, the bridge errors, the app cannot connect — you can fix it. Only for defects in JARVIS itself:
 
-    /Users/marlon/Documents/JARVIS/scripts/jarvis-selffix.sh "<präzise Beschreibung des Fehlers>"
+    /Users/marlon/Developer/JARVIS/scripts/jarvis-selffix.sh "<präzise Beschreibung des Fehlers>"
 
 It hands the task to a coding agent in the JARVIS repository, runs the tests, and reports which files changed. It never commits, pushes or touches anything outside the repo; `BACKEND=claude` uses Claude Code instead of Codex. Name the actual symptom and any error text — a vague task produces a vague fix. It takes minutes, so say you are starting it, then report what changed and what the tests said. If nothing changed, say so plainly rather than implying a repair.
 

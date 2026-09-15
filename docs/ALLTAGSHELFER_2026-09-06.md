@@ -1,6 +1,6 @@
 # JARVIS als Alltagshelfer — überprüfter Stand 2026-09-06
 
-Autoritatives Repo: `/Users/marlon/Documents/JARVIS`, Branch
+Autoritatives Repo: `/Users/marlon/Developer/JARVIS`, Branch
 `checkpoint/bridge-port-8770`. Bestehende Änderungen bleiben erhalten. Die
 Cloud-Planung ist auf Wunsch des Nutzers beendet.
 

@@ -12,7 +12,10 @@ reachable through a private always-on relay and Tailscale.
 
 ## Source of truth
 
-- The only authoritative repository is `/Users/marlon/Documents/JARVIS`.
+- The only authoritative repository is `/Users/marlon/Developer/JARVIS`.
+- `/Users/marlon/Documents/JARVIS` is the pre-2026-09-15 copy inside iCloud Drive,
+  which evicted its venvs and Git objects. It is a read-only archive: do not edit,
+  build, or run services from it, and do not delete it without user approval.
 - `/Users/marlon/JARVIS` is a separate, non-Git prototype accidentally created
   by an earlier Hermes session. Do not edit, merge, move, or delete it without
   explicit user approval.
@@ -84,7 +87,7 @@ reachable through a private always-on relay and Tailscale.
 Run read-only checks first:
 
 ```bash
-cd /Users/marlon/Documents/JARVIS
+cd /Users/marlon/Developer/JARVIS
 pwd
 git rev-parse --show-toplevel
 git status --short
@@ -110,7 +113,7 @@ health endpoint where applicable. Never print API keys or tokens.
 Suggested first Hermes assignment:
 
 ```text
-Work only in /Users/marlon/Documents/JARVIS. Preserve all existing changes and
+Work only in /Users/marlon/Developer/JARVIS. Preserve all existing changes and
 do not touch /Users/marlon/JARVIS. Resolve the native-bridge versus voice-server
 port collision while preserving voice port 8765. Do not edit apple/. Update the
 bridge backend, launchd/setup material, and backend documentation consistently.

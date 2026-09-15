@@ -16,7 +16,7 @@ from typing import Any
 HOME = Path.home()
 PHONE_CODE = Path(os.environ.get("JARVIS_PHONE_CODE", HOME / ".hermes/services/phone"))
 PHONE_PYTHON = os.environ.get(
-    "JARVIS_PHONE_PYTHON", str(HOME / "Documents/JARVIS/LocalData/Runtime/phone-venv/bin/python"))
+    "JARVIS_PHONE_PYTHON", str(HOME / "Developer/JARVIS/LocalData/Runtime/phone-venv/bin/python"))
 
 
 def _run(argv: list[str], stdin: str = "") -> str:

@@ -4,7 +4,7 @@ Owner: **Codex**. Scope: `apple/` only.
 Backend (`server/`, `bridge/`, `relay/`, `launchd/`, `scripts/`) is frozen. Do not edit it.
 Do not commit unless Marlon asks. Do not `sudo`. Do not touch `/Users/marlon/JARVIS`.
 
-Repo: `/Users/marlon/Documents/JARVIS` on `checkpoint/bridge-port-8770`.
+Repo: `/Users/marlon/Developer/JARVIS` on `checkpoint/bridge-port-8770`.
 HEAD tracks only three app files:
 
 - `apple/Config/JARVIS-iOS-Info.plist`

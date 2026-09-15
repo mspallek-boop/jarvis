@@ -14,7 +14,7 @@
 # itself is how a small bug becomes an unrecoverable one.
 set -euo pipefail
 
-REPO=/Users/marlon/Documents/JARVIS
+REPO=/Users/marlon/Developer/JARVIS
 LOG_DIR="${REPO}/server/logs/selffix"
 BACKEND="${BACKEND:-codex}"
 MAX_MIN="${MAX_MIN:-15}"

@@ -12,7 +12,7 @@ HOME = Path.home()
 # Prefer the live repo module; fall back to a copy under ~/.hermes/services if present.
 _CANDIDATES = [
     Path(os.environ.get("JARVIS_GROK_QUEUE", "")),
-    HOME / "Documents/JARVIS/bridge",
+    HOME / "Developer/JARVIS/bridge",
     HOME / ".hermes/services",
 ]
 

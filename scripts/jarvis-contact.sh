@@ -217,7 +217,7 @@ if [[ ${#MATCHES} -eq 0 ]]; then
   if [[ ${READABLE} -eq 0 && ! -r "${CACHE}" ]]; then
     print -u2 "KEIN ZUGRIFF auf die Kontakte (${UNREADABLE} Datenbank(en) gesperrt)"
     print -u2 "und es existiert kein Cache. Einmalig in einem normalen Terminal:"
-    print -u2 "  /Users/marlon/Documents/JARVIS/scripts/jarvis-contact.sh --refresh"
+    print -u2 "  /Users/marlon/Developer/JARVIS/scripts/jarvis-contact.sh --refresh"
     exit 3
   fi
   print "Kein Kontakt gefunden für: ${QUERY}"
